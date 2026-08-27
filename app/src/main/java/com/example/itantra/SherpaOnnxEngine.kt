@@ -35,9 +35,9 @@ class SherpaOnnxEngine(
     private fun copyAssets() {
         val assets = arrayOf(
             "silero_vad.onnx",
-            "sherpa-onnx-whisper-tiny/tiny-encoder.onnx",
-            "sherpa-onnx-whisper-tiny/tiny-decoder.onnx",
-            "sherpa-onnx-whisper-tiny/tiny-tokens.txt",
+            "sherpa-onnx-whisper-base/base-encoder.int8.onnx",
+            "sherpa-onnx-whisper-base/base-decoder.int8.onnx",
+            "sherpa-onnx-whisper-base/base-tokens.txt",
             "vits-piper-en_US-amy-low/en_US-amy-low.onnx",
             "vits-piper-en_US-amy-low/tokens.txt",
             "vits-piper-en_US-amy-low/en_US-amy-low.onnx.json"
@@ -86,28 +86,31 @@ class SherpaOnnxEngine(
                 sileroVadModelConfig = SileroVadModelConfig(
                     model = File(context.filesDir, "silero_vad.onnx").absolutePath,
                     threshold = 0.5f,
-                    minSpeechDuration = 0.25f,
-                    minSilenceDuration = 0.5f,
+                    minSpeechDuration = 0.1f,
+                    minSilenceDuration = 0.3f,
                     windowSize = 512
                 ),
                 sampleRate = sampleRate,
                 numThreads = 1
             )
-            vad = Vad(null, vadConfig)
+            vad = Vad(config = vadConfig)
 
             // STT initialization (Whisper)
             val sttConfig = OfflineRecognizerConfig(
                 modelConfig = OfflineModelConfig(
                     whisper = OfflineWhisperModelConfig(
-                        encoder = File(context.filesDir, "sherpa-onnx-whisper-tiny/tiny-encoder.onnx").absolutePath,
-                        decoder = File(context.filesDir, "sherpa-onnx-whisper-tiny/tiny-decoder.onnx").absolutePath
+                        encoder = File(context.filesDir, "sherpa-onnx-whisper-base/base-encoder.int8.onnx").absolutePath,
+                        decoder = File(context.filesDir, "sherpa-onnx-whisper-base/base-decoder.int8.onnx").absolutePath,
+                        language = "en",
+                        task = "transcribe",
+                        tailPaddings = 0
                     ),
-                    tokens = File(context.filesDir, "sherpa-onnx-whisper-tiny/tiny-tokens.txt").absolutePath,
-                    numThreads = 1,
-                    debug = true
+                    tokens = File(context.filesDir, "sherpa-onnx-whisper-base/base-tokens.txt").absolutePath,
+                    numThreads = 2,
+                    debug = false
                 )
             )
-            recognizer = OfflineRecognizer(null, sttConfig)
+            recognizer = OfflineRecognizer(config = sttConfig)
 
             // TTS initialization (Piper)
             val ttsConfig = OfflineTtsConfig(
@@ -122,7 +125,7 @@ class SherpaOnnxEngine(
                     debug = true
                 )
             )
-            tts = OfflineTts(null, ttsConfig)
+            tts = OfflineTts(config = ttsConfig)
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing models", e)
         }
@@ -211,8 +214,8 @@ class SherpaOnnxEngine(
             
             if (isAlert) {
                 val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+                val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, AudioManager.FLAG_SHOW_UI)
             }
 
             val audio = tts?.generate(playbackText, 0, 1.0f)

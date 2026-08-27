@@ -36,7 +36,9 @@ android {
 }
 
 dependencies {
-    implementation("com.github.k2-fsa:sherpa-onnx:v1.10.42")
+    implementation("com.github.k2-fsa:sherpa-onnx:v1.13.6") {
+        exclude(group = "com.github.k2-fsa.sherpa-onnx", module = "sherpa-onnx-jvm")
+    }
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
