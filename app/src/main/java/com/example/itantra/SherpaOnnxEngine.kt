@@ -34,20 +34,15 @@ class SherpaOnnxEngine(
 
     private fun copyAssets() {
         val assets = arrayOf(
-            "silero_vad.onnx",
-            "sherpa-onnx-whisper-base/base-encoder.int8.onnx",
-            "sherpa-onnx-whisper-base/base-decoder.int8.onnx",
-            "sherpa-onnx-whisper-base/base-tokens.txt",
-            "vits-piper-en_US-amy-low/en_US-amy-low.onnx",
-            "vits-piper-en_US-amy-low/tokens.txt",
-            "vits-piper-en_US-amy-low/en_US-amy-low.onnx.json"
+            "silero_vad.onnx"
         )
         
         assets.forEach { path ->
             copyAsset(path)
         }
         
-        copyAssetDir("vits-piper-en_US-amy-low/espeak-ng-data")
+        copyAssetDir("vits-piper-en_US-amy-low")
+        copyAssetDir("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
     }
 
     private fun copyAsset(path: String) {
@@ -67,15 +62,21 @@ class SherpaOnnxEngine(
     }
 
     private fun copyAssetDir(path: String) {
-        val assets = context.assets.list(path) ?: return
+        val assets = try {
+            context.assets.list(path)
+        } catch (e: Exception) {
+            null
+        } ?: return
+        
+        if (assets.isEmpty()) {
+            // It's a file, not a directory
+            copyAsset(path)
+            return
+        }
+
         for (asset in assets) {
             val fullPath = if (path.isEmpty()) asset else "$path/$asset"
-            val children = context.assets.list(fullPath)
-            if (children != null && children.isNotEmpty()) {
-                copyAssetDir(fullPath)
-            } else {
-                copyAsset(fullPath)
-            }
+            copyAssetDir(fullPath)
         }
     }
 
@@ -95,17 +96,19 @@ class SherpaOnnxEngine(
             )
             vad = Vad(config = vadConfig)
 
-            // STT initialization (Whisper)
+            // STT initialization (SenseVoice)
             val sttConfig = OfflineRecognizerConfig(
                 modelConfig = OfflineModelConfig(
-                    whisper = OfflineWhisperModelConfig(
-                        encoder = File(context.filesDir, "sherpa-onnx-whisper-base/base-encoder.int8.onnx").absolutePath,
-                        decoder = File(context.filesDir, "sherpa-onnx-whisper-base/base-decoder.int8.onnx").absolutePath,
-                        language = "en",
-                        task = "transcribe",
-                        tailPaddings = 0
+                    senseVoice = OfflineSenseVoiceModelConfig(
+                        model = File(context.filesDir,
+                            "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
+                        ).absolutePath,
+                        language = "auto",
+                        useInverseTextNormalization = true
                     ),
-                    tokens = File(context.filesDir, "sherpa-onnx-whisper-base/base-tokens.txt").absolutePath,
+                    tokens = File(context.filesDir,
+                        "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt"
+                    ).absolutePath,
                     numThreads = 2,
                     debug = false
                 )
