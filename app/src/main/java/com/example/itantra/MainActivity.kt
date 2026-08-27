@@ -162,6 +162,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         networkManager.stopServer()
-        sherpaEngine.stopListening()
+        sherpaEngine.release()
     }
 }

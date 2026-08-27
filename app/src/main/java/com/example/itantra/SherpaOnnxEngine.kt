@@ -3,6 +3,10 @@ package com.example.itantra
 import android.content.Context
 import android.media.*
 import android.util.Log
+import com.example.itantra.audio.AudioTrackPlayer
+import com.example.itantra.audio.MicAudioCapture
+import com.example.itantra.audio.SileroVoiceActivityDetector
+import com.example.itantra.audio.SynthesizedAudio
 import com.k2fsa.sherpa.onnx.*
 import kotlinx.coroutines.*
 import java.io.File
@@ -14,18 +18,15 @@ class SherpaOnnxEngine(
 ) {
     private val TAG = "SherpaOnnxEngine"
     private var recognizer: OfflineRecognizer? = null
-    private var vad: Vad? = null
     private var tts: OfflineTts? = null
-    
-    private var audioRecord: AudioRecord? = null
+
+    private val micCapture = MicAudioCapture(context)
+    private var vadSegmenter: SileroVoiceActivityDetector? = null
+    private val player = AudioTrackPlayer()
+
     private var isListening = false
     private val scope = CoroutineScope(Dispatchers.IO)
-    private var recordingJob: Job? = null
-
-    private val sampleRate = 16000
-    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    private var captureJob: Job? = null
 
     init {
         copyAssets()
@@ -42,18 +43,18 @@ class SherpaOnnxEngine(
             "vits-piper-en_US-amy-low/tokens.txt",
             "vits-piper-en_US-amy-low/en_US-amy-low.onnx.json"
         )
-        
+
         assets.forEach { path ->
             copyAsset(path)
         }
-        
+
         copyAssetDir("vits-piper-en_US-amy-low/espeak-ng-data")
     }
 
     private fun copyAsset(path: String) {
         val destFile = File(context.filesDir, path)
         if (destFile.exists()) return
-        
+
         destFile.parentFile?.mkdirs()
         try {
             context.assets.open(path).use { input ->
@@ -82,18 +83,9 @@ class SherpaOnnxEngine(
     private fun initModels() {
         try {
             // VAD initialization
-            val vadConfig = VadModelConfig(
-                sileroVadModelConfig = SileroVadModelConfig(
-                    model = File(context.filesDir, "silero_vad.onnx").absolutePath,
-                    threshold = 0.5f,
-                    minSpeechDuration = 0.25f,
-                    minSilenceDuration = 0.5f,
-                    windowSize = 512
-                ),
-                sampleRate = sampleRate,
-                numThreads = 1
+            vadSegmenter = SileroVoiceActivityDetector(
+                modelPath = File(context.filesDir, "silero_vad.onnx").absolutePath
             )
-            vad = Vad(null, vadConfig)
 
             // STT initialization (Whisper)
             val sttConfig = OfflineRecognizerConfig(
@@ -130,85 +122,43 @@ class SherpaOnnxEngine(
 
     fun startListening() {
         if (isListening) return
+        val segmenter = vadSegmenter
+        if (segmenter == null) {
+            Log.e(TAG, "VAD failed to initialize; cannot start listening")
+            return
+        }
         isListening = true
-        
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize
-            )
-            
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord not initialized")
-                return
-            }
-            
-            audioRecord?.startRecording()
-            
-            recordingJob = scope.launch {
-                val buffer = ShortArray(512)
-                val audioData = mutableListOf<Float>()
-                var isSpeechStarted = false
-                
-                while (isListening) {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (read > 0) {
-                        val floatBuffer = FloatArray(read)
-                        for (i in 0 until read) {
-                            floatBuffer[i] = buffer[i] / 32768.0f
-                        }
-                        
-                        vad?.acceptWaveform(floatBuffer)
-                        
-                        if (vad?.isSpeechDetected() == true) {
-                            if (!isSpeechStarted) {
-                                Log.d(TAG, "Speech started")
-                                isSpeechStarted = true
-                            }
-                            audioData.addAll(floatBuffer.toList())
-                        } else if (isSpeechStarted) {
-                            Log.d(TAG, "Speech ended")
-                            val finalAudio = audioData.toFloatArray()
-                            if (finalAudio.isNotEmpty()) {
-                                val stream = recognizer?.createStream()
-                                stream?.acceptWaveform(finalAudio, sampleRate)
-                                recognizer?.decode(stream!!)
-                                val result = recognizer?.getResult(stream!!)?.text
-                                if (!result.isNullOrBlank()) {
-                                    onTextReady(result.trim())
-                                }
-                            }
-                            audioData.clear()
-                            isSpeechStarted = false
-                        }
-                    }
+
+        captureJob = scope.launch {
+            try {
+                segmenter.segment(micCapture.start()).collect { segment ->
+                    val stream = recognizer?.createStream()
+                    stream?.acceptWaveform(segment.samples, segment.sampleRate)
+                    recognizer?.decode(stream!!)
+                    recognizer?.getResult(stream!!)?.text
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let(onTextReady)
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during listen/transcribe pipeline", e)
+            } finally {
+                isListening = false
             }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Permission denied for AudioRecord", e)
         }
     }
 
     fun stopListening() {
         isListening = false
-        recordingJob?.cancel()
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping AudioRecord", e)
-        }
-        audioRecord = null
+        micCapture.stop()
+        captureJob?.cancel()
     }
 
     fun synthesizeAndPlay(text: String) {
         scope.launch {
             val isAlert = text.startsWith("[ALERT]")
             val playbackText = if (isAlert) text.removePrefix("[ALERT]") else text
-            
+
             if (isAlert) {
                 val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -217,27 +167,18 @@ class SherpaOnnxEngine(
 
             val audio = tts?.generate(playbackText, 0, 1.0f)
             if (audio != null) {
-                val samples = audio.samples
-                val track = AudioTrack.Builder()
-                    .setAudioAttributes(AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                    .setAudioFormat(AudioFormat.Builder()
-                        .setSampleRate(audio.sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build())
-                    .setBufferSizeInBytes(samples.size * 4)
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .build()
-                
-                track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                track.play()
-                val durationMs = (samples.size.toFloat() / audio.sampleRate * 1000).toLong()
-                delay(durationMs + 500)
-                track.release()
+                try {
+                    player.play(SynthesizedAudio(audio.samples, audio.sampleRate))
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error playing synthesized audio", e)
+                }
             }
         }
+    }
+
+    fun release() {
+        stopListening()
+        vadSegmenter?.close()
+        player.close()
     }
 }
