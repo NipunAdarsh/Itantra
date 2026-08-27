@@ -1,6 +1,8 @@
 package com.example.itantra.audio
 
 import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.delay
@@ -12,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,16 +31,39 @@ import org.junit.runner.RunWith
 class MicAudioCaptureInstrumentedTest {
 
     @Before
-    fun grantMicPermission() {
-        // Equivalent to GrantPermissionRule, without adding the
-        // androidx.test:rules dependency: `pm grant` via UiAutomation shell
-        // privileges, scoped to this test's own instrumentation.
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.uiAutomation.grantRuntimePermission(
-            instrumentation.targetContext.packageName,
-            Manifest.permission.RECORD_AUDIO
+    fun ensureMicPermissionGranted() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+
+        if (!isRecordAudioGranted(context)) {
+            // Equivalent to GrantPermissionRule, without adding the
+            // androidx.test:rules dependency: `pm grant` via UiAutomation
+            // shell privileges. Some OEM builds (observed on MIUI) restrict
+            // this shell-level grant unless "USB debugging (Security
+            // settings)" is separately enabled in Developer options, so we
+            // don't let a SecurityException here crash the test suite.
+            try {
+                InstrumentationRegistry.getInstrumentation().uiAutomation.grantRuntimePermission(
+                    context.packageName,
+                    Manifest.permission.RECORD_AUDIO
+                )
+            } catch (e: SecurityException) {
+                // Fall through; the assumeTrue below will skip with a clear
+                // reason instead of failing with a raw SecurityException.
+            }
+        }
+
+        assumeTrue(
+            "RECORD_AUDIO not granted and this device would not allow granting it " +
+                "via adb/instrumentation (seen on MIUI without 'USB debugging " +
+                "(Security settings)' enabled). Grant it manually by launching the " +
+                "app once and accepting the permission prompt, then re-run.",
+            isRecordAudioGranted(context)
         )
     }
+
+    private fun isRecordAudioGranted(context: android.content.Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
 
     @Test
     fun capturedFramesMatchConfiguredFormat() = runBlocking {
