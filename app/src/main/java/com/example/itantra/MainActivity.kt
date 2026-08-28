@@ -2,166 +2,166 @@ package com.example.itantra
 
 import android.Manifest
 import android.os.Bundle
-import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import com.example.itantra.ui.P2pState
+import com.example.itantra.ui.TranscriptMessage
+import com.example.itantra.ui.WalkieTalkieScreen
 import com.example.itantra.ui.theme.ITantraTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalComposeUiApi::class)
 class MainActivity : ComponentActivity() {
-    private lateinit var sherpaEngine: SherpaOnnxEngine
-    private lateinit var networkManager: NetworkManager
 
-    private val transcript = mutableStateListOf<String>()
-    private val modeState = mutableStateOf("SENDER")
-    private val targetIpState = mutableStateOf("")
-    private val isEmergencyState = mutableStateOf(false)
+    // ── Engine & Networking ───────────────────────────────────────────────────
+    private lateinit var sherpaEngine     : SherpaOnnxEngine
+    private lateinit var networkManager   : NetworkManager
+    private lateinit var discoveryManager : DiscoveryManager
 
-    @OptIn(ExperimentalComposeUiApi::class)
+    // ── UI State ─────────────────────────────────────────────────────────────
+    private val transcriptState       = mutableStateListOf<TranscriptMessage>()
+    private val isListeningState      = mutableStateOf(false)
+    private val isTransmittingState   = mutableStateOf(false)
+    private val isEmergencyState      = mutableStateOf(false)
+    private val p2pState              = mutableStateOf<P2pState>(P2pState.Searching)
+    private val selectedLanguageState = mutableStateOf(AppLanguage.ENGLISH)
+
+    private var messageIdCounter = 0L
+    private fun nextId() = ++messageIdCounter
+
+    private fun currentTimestamp(): String {
+        val cal = java.util.Calendar.getInstance()
+        return "%02d:%02d".format(
+            cal.get(java.util.Calendar.HOUR_OF_DAY),
+            cal.get(java.util.Calendar.MINUTE)
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val permissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { isGranted -> }
-        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        // ── Runtime Permissions Request (Audio + WiFi/Location for Discovery) ─
+        val permissionsLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { /* results handled; mic & discovery start gracefully */ }
+        permissionsLauncher.launch(
+            arrayOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
 
+        // ── Full Duplex Network Manager ──────────────────────────────────────
         networkManager = NetworkManager { receivedText ->
             runOnUiThread {
-                transcript.add(0, "Received: $receivedText")
-                if (modeState.value == "RECEIVER") {
+                transcriptState.add(
+                    0,
+                    TranscriptMessage(
+                        id          = nextId(),
+                        text        = receivedText,
+                        direction   = TranscriptMessage.Direction.RECEIVED,
+                        isEmergency = receivedText.startsWith("[ALERT]"),
+                        timestamp   = currentTimestamp()
+                    )
+                )
+                // Play received audio on both devices when not holding mic
+                if (!isListeningState.value) {
                     sherpaEngine.synthesizeAndPlay(receivedText)
                 }
             }
         }
 
+        // ── UDP Broadcast Auto-Discovery Manager ──────────────────────────────
+        discoveryManager = DiscoveryManager(this) { peerIp ->
+            runOnUiThread {
+                p2pState.value = P2pState.Connected(peerIp)
+                networkManager.setPeerIp(peerIp)
+            }
+        }
+
+        // ── Neural Voice Engine (STT -> Network Send -> TTS) ─────────────────
         sherpaEngine = SherpaOnnxEngine(this) { sttText ->
             runOnUiThread {
                 val finalMessage = if (isEmergencyState.value) "[ALERT]$sttText" else sttText
-                transcript.add(0, "Sent: $finalMessage")
-                if (modeState.value == "SENDER" && targetIpState.value.isNotEmpty()) {
-                    networkManager.sendText(targetIpState.value, finalMessage)
+                transcriptState.add(
+                    0,
+                    TranscriptMessage(
+                        id          = nextId(),
+                        text        = finalMessage,
+                        direction   = TranscriptMessage.Direction.SENT,
+                        isEmergency = isEmergencyState.value,
+                        timestamp   = currentTimestamp()
+                    )
+                )
+                lifecycleScope.launch {
+                    isTransmittingState.value = true
+                    networkManager.sendText(finalMessage)
+                    delay(500) // Visual feedback duration
+                    isTransmittingState.value = false
                 }
             }
         }
 
+        // ── Compose UI ───────────────────────────────────────────────────────
         setContent {
             ITantraTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    WalkieTalkieScreen()
-                }
-            }
-        }
-    }
-
-    @ExperimentalComposeUiApi
-    @Composable
-    fun WalkieTalkieScreen() {
-        var mode by modeState
-        var targetIp by targetIpState
-        var isEmergency by isEmergencyState
-
-        LaunchedEffect(mode) {
-            if (mode == "RECEIVER") {
-                networkManager.startServer()
-            } else {
-                networkManager.stopServer()
-            }
-        }
-
-        Column(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Button(
-                    onClick = { mode = "SENDER" },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (mode == "SENDER") MaterialTheme.colorScheme.primary else Color.Gray)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color    = MaterialTheme.colorScheme.background
                 ) {
-                    Text("SENDER")
-                }
-                Button(
-                    onClick = { mode = "RECEIVER" },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (mode == "RECEIVER") MaterialTheme.colorScheme.primary else Color.Gray)
-                ) {
-                    Text("RECEIVER")
-                }
-            }
+                    val isListening      by isListeningState
+                    val isTransmitting   by isTransmittingState
+                    val isEmergency      by isEmergencyState
+                    val p2pConnection    by p2pState
+                    val selectedLanguage by selectedLanguageState
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (mode == "SENDER") {
-                TextField(
-                    value = targetIp,
-                    onValueChange = { targetIp = it },
-                    label = { Text("Receiver IP Address") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                Text("Waiting for incoming messages...", fontSize = 14.sp, color = Color.Gray)
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("EMERGENCY ALERT")
-                Spacer(modifier = Modifier.width(8.dp))
-                Switch(checked = isEmergency, onCheckedChange = { isEmergency = it })
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Button(
-                onClick = {},
-                modifier = Modifier
-                    .size(180.dp)
-                    .pointerInteropFilter {
-                        when (it.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                sherpaEngine.startListening()
-                                true
-                            }
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                sherpaEngine.stopListening()
-                                true
-                            }
-                            else -> false
+                    WalkieTalkieScreen(
+                        isListening          = isListening,
+                        isTransmitting       = isTransmitting,
+                        p2pConnectionState   = p2pConnection,
+                        selectedLanguage     = selectedLanguage,
+                        transcriptList       = transcriptState,
+                        isEmergencyAlert     = isEmergency,
+                        onPushToTalkPressed  = {
+                            isListeningState.value = true
+                            sherpaEngine.startListening()
+                        },
+                        onPushToTalkReleased = {
+                            isListeningState.value = false
+                            sherpaEngine.stopListening()
+                        },
+                        onVoiceChange        = { lang ->
+                            selectedLanguageState.value = lang
+                            sherpaEngine.switchLanguage(lang)
+                        },
+                        onEmergencyToggle    = { enabled ->
+                            isEmergencyState.value = enabled
                         }
-                    },
-                shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
-            ) {
-                Text("PTT", fontSize = 24.sp, color = Color.White)
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text("Transcript", style = MaterialTheme.typography.titleLarge)
-            HorizontalDivider()
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(transcript) { line ->
-                    Text(line, modifier = Modifier.padding(vertical = 4.dp), fontSize = 16.sp)
+                    )
                 }
             }
         }
+
+        // Start background networking & peer discovery
+        networkManager.start()
+        discoveryManager.start()
+        p2pState.value = P2pState.Searching
     }
-    
+
     override fun onDestroy() {
         super.onDestroy()
-        networkManager.stopServer()
+        discoveryManager.stop()
+        networkManager.stop()
         sherpaEngine.stopListening()
     }
 }

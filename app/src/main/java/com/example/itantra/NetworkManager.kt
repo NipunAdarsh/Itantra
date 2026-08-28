@@ -2,90 +2,116 @@ package com.example.itantra
 
 import android.util.Log
 import kotlinx.coroutines.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
-import java.net.ServerSocket
-import java.net.Socket
+import java.io.*
+import java.net.*
 
 class NetworkManager(
     private val onTextReceived: (String) -> Unit
 ) {
-    private val TAG = "NetworkManager"
-    private val port = 8888
+    private val TCP_PORT = 8888
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var serverSocket: ServerSocket? = null
-    private var isServerRunning = false
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private var peerIp: String? = null
+    private var isRunning = false
 
-    fun startServer() {
-        if (isServerRunning) return
-        isServerRunning = true
+    fun start() {
+        if (isRunning) return
+        isRunning = true
+        startServer()
+    }
+
+    fun stop() {
+        isRunning = false
+        try {
+            serverSocket?.close()
+        } catch (e: Exception) {
+            Log.e("NetworkManager", "Close server socket error", e)
+        }
+        scope.cancel()
+    }
+
+    fun setPeerIp(ip: String) {
+        peerIp = ip
+        Log.d("NetworkManager", "Peer discovered: $ip")
+    }
+
+    fun getPeerIp(): String? = peerIp
+
+    fun sendText(text: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val targetIp = peerIp
+        if (targetIp == null) {
+            Log.w("NetworkManager", "sendText failed: no peer IP set")
+            onComplete?.invoke(false)
+            return
+        }
+        scope.launch {
+            var retries = 3
+            while (retries > 0) {
+                try {
+                    val socket = Socket()
+                    socket.connect(
+                        InetSocketAddress(targetIp, TCP_PORT), 3000
+                    )
+                    val writer = PrintWriter(
+                        OutputStreamWriter(socket.getOutputStream()),
+                        true
+                    )
+                    writer.println(text)
+                    socket.close()
+                    Log.d("NetworkManager", "Sent text successfully to $targetIp: $text")
+                    onComplete?.invoke(true)
+                    return@launch
+                } catch (e: Exception) {
+                    retries--
+                    Log.e("NetworkManager", "Send failed, retries left: $retries", e)
+                    if (retries > 0) delay(500)
+                }
+            }
+            onComplete?.invoke(false)
+        }
+    }
+
+    fun sendText(targetIp: String, text: String, onComplete: ((Boolean) -> Unit)? = null) {
+        setPeerIp(targetIp)
+        sendText(text, onComplete)
+    }
+
+    private fun startServer() {
         scope.launch {
             try {
-                serverSocket = ServerSocket(port)
-                Log.d(TAG, "Server started on port $port")
-                while (isServerRunning) {
-                    val clientSocket = serverSocket?.accept() ?: break
-                    scope.launch {
-                        handleClient(clientSocket)
+                serverSocket = ServerSocket(TCP_PORT)
+                Log.d("NetworkManager", "Server listening on $TCP_PORT")
+                while (isRunning) {
+                    try {
+                        val client = serverSocket?.accept() ?: break
+                        scope.launch {
+                            handleClient(client)
+                        }
+                    } catch (e: Exception) {
+                        if (isRunning) {
+                            Log.e("NetworkManager", "Accept error", e)
+                        }
                     }
                 }
             } catch (e: Exception) {
-                if (isServerRunning) {
-                    Log.e(TAG, "Server error", e)
-                }
-            } finally {
-                try {
-                    serverSocket?.close()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error closing server socket", e)
-                }
-                isServerRunning = false
+                Log.e("NetworkManager", "Server error", e)
             }
         }
     }
 
     private fun handleClient(socket: Socket) {
         try {
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val reader = BufferedReader(
+                InputStreamReader(socket.getInputStream())
+            )
             val text = reader.readLine()
-            if (text != null) {
-                Log.d(TAG, "Received: $text")
+            if (!text.isNullOrBlank()) {
+                Log.d("NetworkManager", "Received text: $text")
                 onTextReceived(text)
             }
+            socket.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error handling client", e)
-        } finally {
-            try {
-                socket.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing client socket", e)
-            }
-        }
-    }
-
-    fun stopServer() {
-        isServerRunning = false
-        scope.launch {
-            try {
-                serverSocket?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping server", e)
-            }
-        }
-    }
-
-    fun sendText(ip: String, text: String) {
-        scope.launch {
-            try {
-                val socket = Socket(ip, port)
-                val writer = PrintWriter(socket.getOutputStream(), true)
-                writer.println(text)
-                socket.close()
-                Log.d(TAG, "Sent to $ip: $text")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error sending text to $ip", e)
-            }
+            Log.e("NetworkManager", "Client handler error", e)
         }
     }
 }

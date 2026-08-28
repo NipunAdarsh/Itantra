@@ -8,6 +8,11 @@ import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
 
+enum class AppLanguage(val code: String, val label: String) {
+    ENGLISH("en", "English"),
+    HINDI("hi", "Hindi")
+}
+
 class SherpaOnnxEngine(
     private val context: Context,
     private val onTextReady: (String) -> Unit
@@ -16,6 +21,10 @@ class SherpaOnnxEngine(
     private var recognizer: OfflineRecognizer? = null
     private var vad: Vad? = null
     private var tts: OfflineTts? = null
+    private var currentLanguage = AppLanguage.ENGLISH
+    
+    @Volatile private var isTtsSwitching = false
+    @Volatile private var ttsReady = false
     
     private var audioRecord: AudioRecord? = null
     private var isListening = false
@@ -42,6 +51,7 @@ class SherpaOnnxEngine(
         }
         
         copyAssetDir("vits-piper-en_US-amy-low")
+        copyAssetDir("vits-piper-hi_IN-pratham-medium")
         copyAssetDir("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
     }
 
@@ -103,7 +113,7 @@ class SherpaOnnxEngine(
                         model = File(context.filesDir,
                             "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx"
                         ).absolutePath,
-                        language = "auto",
+                        language = "en",
                         useInverseTextNormalization = true
                     ),
                     tokens = File(context.filesDir,
@@ -129,6 +139,7 @@ class SherpaOnnxEngine(
                 )
             )
             tts = OfflineTts(config = ttsConfig)
+            ttsReady = true
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing models", e)
         }
@@ -184,7 +195,10 @@ class SherpaOnnxEngine(
                                 recognizer?.decode(stream!!)
                                 val result = recognizer?.getResult(stream!!)?.text
                                 if (!result.isNullOrBlank()) {
-                                    onTextReady(result.trim())
+                                    val sanitized = sanitizeText(result)
+                                    if (sanitized.length >= 2) {
+                                        onTextReady(sanitized)
+                                    }
                                 }
                             }
                             audioData.clear()
@@ -210,39 +224,113 @@ class SherpaOnnxEngine(
         audioRecord = null
     }
 
-    fun synthesizeAndPlay(text: String) {
-        scope.launch {
-            val isAlert = text.startsWith("[ALERT]")
-            val playbackText = if (isAlert) text.removePrefix("[ALERT]") else text
-            
-            if (isAlert) {
-                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, AudioManager.FLAG_SHOW_UI)
+    fun switchLanguage(lang: AppLanguage) {
+        if (currentLanguage == lang) return
+        currentLanguage = lang
+        isTtsSwitching = true
+        ttsReady = false
+        scope.launch(Dispatchers.IO) {
+            try {
+                tts?.release()
+                tts = null
+                val vitsConfig = when (lang) {
+                    AppLanguage.ENGLISH -> OfflineTtsVitsModelConfig(
+                        model = File(context.filesDir,
+                            "vits-piper-en_US-amy-low/en_US-amy-low.onnx").absolutePath,
+                        lexicon = "",
+                        tokens = File(context.filesDir,
+                            "vits-piper-en_US-amy-low/tokens.txt").absolutePath,
+                        dataDir = File(context.filesDir,
+                            "vits-piper-en_US-amy-low/espeak-ng-data").absolutePath
+                    )
+                    AppLanguage.HINDI -> OfflineTtsVitsModelConfig(
+                        model = File(context.filesDir,
+                            "vits-piper-hi_IN-pratham-medium/hi_IN-pratham-medium.onnx").absolutePath,
+                        lexicon = "",
+                        tokens = File(context.filesDir,
+                            "vits-piper-hi_IN-pratham-medium/tokens.txt").absolutePath,
+                        dataDir = File(context.filesDir,
+                            "vits-piper-hi_IN-pratham-medium/espeak-ng-data").absolutePath
+                    )
+                }
+                tts = OfflineTts(
+                    config = OfflineTtsConfig(
+                        model = OfflineTtsModelConfig(
+                            vits = vitsConfig,
+                            numThreads = 1,
+                            debug = false
+                        )
+                    )
+                )
+                ttsReady = true
+            } catch (e: Exception) {
+                Log.e(TAG, "TTS switch failed", e)
+            } finally {
+                isTtsSwitching = false
             }
+        }
+    }
 
-            val audio = tts?.generate(playbackText, 0, 1.0f)
-            if (audio != null) {
-                val samples = audio.samples
-                val track = AudioTrack.Builder()
-                    .setAudioAttributes(AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                    .setAudioFormat(AudioFormat.Builder()
-                        .setSampleRate(audio.sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build())
-                    .setBufferSizeInBytes(samples.size * 4)
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .build()
+    private fun sanitizeText(rawText: String): String {
+        // Remove SenseVoice emotion and event tags
+        var cleaned = rawText.replace(Regex("<\\|.*?\\|>"), "")
+        
+        // Remove all Unicode characters outside basic English ASCII range
+        cleaned = cleaned.replace(Regex("[^\\x20-\\x7E]"), "")
+        
+        // Remove any remaining brackets and special tokens
+        cleaned = cleaned.replace(Regex("\\[.*?\\]"), "")
+        
+        // Keep only English letters, numbers, spaces and basic punctuation
+        cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s.,!?'\\-]"), "")
+        
+        // Collapse multiple spaces and trim
+        cleaned = cleaned.replace(Regex("\\s+"), " ").trim()
+        
+        return cleaned
+    }
+
+    fun synthesizeAndPlay(text: String) {
+        if (isTtsSwitching) return
+        if (!ttsReady) return
+        val currentTts = tts ?: return
+        
+        scope.launch {
+            try {
+                val isAlert = text.startsWith("[ALERT]")
+                val playbackText = if (isAlert) text.removePrefix("[ALERT]") else text
                 
-                track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                track.play()
-                val durationMs = (samples.size.toFloat() / audio.sampleRate * 1000).toLong()
-                delay(durationMs + 500)
-                track.release()
+                if (isAlert) {
+                    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, AudioManager.FLAG_SHOW_UI)
+                }
+
+                val audio = currentTts.generate(playbackText, 0, 1.0f)
+                if (audio != null) {
+                    val samples = audio.samples
+                    val track = AudioTrack.Builder()
+                        .setAudioAttributes(AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                        .setAudioFormat(AudioFormat.Builder()
+                            .setSampleRate(audio.sampleRate)
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build())
+                        .setBufferSizeInBytes(samples.size * 4)
+                        .setTransferMode(AudioTrack.MODE_STATIC)
+                        .build()
+                    
+                    track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                    track.play()
+                    val durationMs = (samples.size.toFloat() / audio.sampleRate * 1000).toLong()
+                    delay(durationMs + 500)
+                    track.release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "TTS playback failed", e)
             }
         }
     }
