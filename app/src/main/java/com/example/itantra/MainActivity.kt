@@ -162,6 +162,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         discoveryManager.stop()
         networkManager.stop()
-        sherpaEngine.stopListening()
+        sherpaEngine.release()
     }
 }
