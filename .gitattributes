@@ -1,3 +1,9 @@
 *.onnx filter=lfs diff=lfs merge=lfs -text
 *.so filter=lfs diff=lfs merge=lfs -text
 app/src/main/assets/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx filter=lfs diff=lfs merge=lfs -text
+
+# Model config/vocab files are opaque data consumed by native code, not
+# human-edited text -- never let Git normalize their line endings. A CRLF
+# conversion here silently corrupts sherpa-onnx's tokens.txt parsing (see
+# the Hindi TTS crash fix commit) since it relies on exact byte content.
+app/src/main/assets/** -text
