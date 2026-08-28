@@ -117,25 +117,38 @@ class P2PServer(
     }
 
     /**
-     * Reads a single newline-delimited JSON payload from [socket], parses it, and
-     * dispatches the result to [onMessageReceived] on [Dispatchers.Default].
+     * Drains newline-delimited JSON payloads from [socket] until the client
+     * disconnects (EOF) or an unrecoverable read error occurs.
      *
-     * The socket is closed (via `use`) regardless of success or failure.
+     * Keeping the loop alive means a [P2PClient] using a persistent connection
+     * can send many messages over a single TCP session without the server
+     * dropping the socket after the first read.
+     *
+     * Each parsed [NetworkMessage] is dispatched to [onMessageReceived] on
+     * [Dispatchers.Default] so the callback runs off the IO thread pool.
+     *
+     * The socket is closed (via `use`) regardless of how the loop exits.
      */
     private fun handleClientConnection(socket: Socket) {
         scope.launch {
             try {
                 socket.use { s ->
                     val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
-                    val payload = reader.readLine() ?: return@use
-                    val message = NetworkMessage.fromJson(payload)
-                    // Dispatch to Default so callers are not on the IO thread pool.
-                    withContext(Dispatchers.Default) {
-                        onMessageReceived(message)
+                    // Loop until EOF (readLine returns null) or coroutine is cancelled.
+                    while (isActive) {
+                        val payload = reader.readLine() ?: break   // null == client disconnected
+                        try {
+                            val message = NetworkMessage.fromJson(payload)
+                            withContext(Dispatchers.Default) {
+                                onMessageReceived(message)
+                            }
+                        } catch (_: Exception) {
+                            // Malformed JSON for this one packet – keep the connection alive.
+                        }
                     }
                 }
             } catch (_: Exception) {
-                // Parsing or read error for this specific client; server keeps running.
+                // Socket-level read error for this client; server accept loop keeps running.
             }
         }
     }

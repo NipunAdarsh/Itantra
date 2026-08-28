@@ -2,6 +2,8 @@ package com.example.app.network
 
 import com.example.app.model.NetworkMessage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.IOException
@@ -10,63 +12,161 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * Stateless P2P client for sending a [NetworkMessage] to a remote [P2PServer].
+ * Stateful P2P client that maintains a **persistent TCP connection** to a single
+ * remote [com.example.app.network.P2PServer].
  *
- * Each call to [sendMessage] opens a fresh TCP connection, writes the serialized
- * JSON line, flushes, and tears the connection down cleanly.  All I/O is run on
- * [Dispatchers.IO] so the function is safe to call from any coroutine context.
+ * Motivation: opening/closing a TCP socket per phrase wastes a full three-way
+ * handshake (~1–3 RTTs) on every transmission, drains CPU (TLS-less but still
+ * syscall-heavy) and prevents the OS Wi-Fi radio from sleeping between bursts.
+ * Keeping one connection alive eliminates this entirely.
  *
- * Usage (inside a coroutine or suspend fun):
+ * ## Lifecycle
  * ```kotlin
- * val result = P2PClient.sendMessage(
- *     targetIp = "192.168.1.42",
- *     message  = myNetworkMessage
- * )
- * result.onFailure { e -> Log.e("P2PClient", "Send failed", e) }
+ * val client = P2PClient()
+ * client.connect("192.168.1.42")         // once, when the session starts
+ *
+ * client.sendMessage(msg)                // as many times as needed
+ * client.sendMessage(msg2)
+ *
+ * client.disconnect()                    // when the session ends
  * ```
+ *
+ * ## Thread safety
+ * [sendMessage] serialises concurrent callers through a [Mutex] so the underlying
+ * [BufferedWriter] is never written from two coroutines simultaneously.
+ *
+ * ## Reconnection
+ * If the socket is found to be closed or broken at send time, [sendMessage]
+ * attempts a **single silent reconnect** before returning [Result.failure].
+ * This handles transient Wi-Fi drops without requiring the caller to call
+ * [connect] again.
  */
-object P2PClient {
+class P2PClient {
 
-    /** Maximum time (ms) to wait while establishing the TCP connection. */
-    private const val CONNECTION_TIMEOUT_MS = 5_000
+    /** Maximum time (ms) allowed for the TCP three-way handshake. */
+    private val connectionTimeoutMs = 5_000
+
+    // Mutable connection state – all access goes through [writeMutex].
+    private var socket: Socket? = null
+    private var writer: BufferedWriter? = null
+    private var lastIp: String = ""
+    private var lastPort: Int = 8888
+
+    /** Serialises all writes (and reconnect attempts) so the writer is never shared. */
+    private val writeMutex = Mutex()
+
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
 
     /**
-     * Serializes [message] to JSON and transmits it to [targetIp]:[port].
+     * Opens a persistent TCP connection to [targetIp]:[port].
      *
-     * @param targetIp IPv4 (or IPv6) address of the target [P2PServer].
-     * @param port     Destination port; defaults to 8888.
-     * @param message  The [NetworkMessage] to serialize and send.
-     * @return [Result.success] on a clean write+flush, or [Result.failure]
-     *         wrapping the [IOException] (or any other exception) on error.
+     * Idempotent: if a healthy connection already exists to the same host, this
+     * is a no-op. If the target changes or the old socket is dead, it is replaced.
+     *
+     * @param targetIp Destination IPv4/IPv6 address.
+     * @param port     Destination port (default 8888).
+     * @return [Result.success] when connected, [Result.failure] on [IOException].
      */
-    suspend fun sendMessage(
+    suspend fun connect(
         targetIp: String,
-        port: Int = 8888,
-        message: NetworkMessage
+        port: Int = 8888
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            // socket.use {} guarantees close() even if an exception is thrown.
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(targetIp, port), CONNECTION_TIMEOUT_MS)
+        writeMutex.withLock {
+            // Reuse existing healthy connection to the same host.
+            if (socket?.isConnected == true && !socket!!.isClosed &&
+                lastIp == targetIp && lastPort == port
+            ) return@withContext Result.success(Unit)
 
-                // Wrap the output stream in a BufferedWriter for efficient writes.
-                val writer = BufferedWriter(
-                    OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8)
-                )
-                // The server uses readLine(), so the message MUST end with '\n'.
-                writer.write(message.toJson())
-                writer.newLine()
-                writer.flush()
-                // writer does NOT own the socket's stream lifecycle; closing the
-                // socket (via use {}) is sufficient to release OS resources.
+            closeSilently()
+            openConnection(targetIp, port)
+        }
+    }
+
+    /**
+     * Sends [message] over the persistent connection.
+     *
+     * If the underlying socket is found to be closed, a single silent reconnect
+     * is attempted before giving up.  All I/O is confined to [Dispatchers.IO].
+     *
+     * @return [Result.success] on a clean write+flush, [Result.failure] otherwise.
+     */
+    suspend fun sendMessage(message: NetworkMessage): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            writeMutex.withLock {
+                // Attempt reconnect if the socket is no longer healthy.
+                if (socket == null || socket!!.isClosed || !socket!!.isConnected) {
+                    val reconnect = openConnection(lastIp, lastPort)
+                    if (reconnect.isFailure) return@withContext reconnect
+                }
+
+                try {
+                    val w = writer ?: return@withContext Result.failure(
+                        IOException("Not connected – call connect() first.")
+                    )
+                    // Wire format: compact JSON + newline delimiter (readLine() on server side).
+                    w.write(message.toJson())
+                    w.newLine()
+                    w.flush()
+                    Result.success(Unit)
+                } catch (e: IOException) {
+                    // Mark connection dead so the next call triggers reconnect.
+                    closeSilently()
+                    Result.failure(e)
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
             }
+        }
+
+    /**
+     * Flushes any buffered data and closes the underlying socket.
+     * Safe to call from any thread. Safe to call even if not connected.
+     */
+    suspend fun disconnect() = withContext(Dispatchers.IO) {
+        writeMutex.withLock {
+            try {
+                writer?.flush()
+            } catch (_: Exception) {}
+            closeSilently()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates a new [Socket], connects it, and wires up the [BufferedWriter].
+     * Must be called **inside** [writeMutex].
+     */
+    private fun openConnection(targetIp: String, port: Int): Result<Unit> {
+        return try {
+            val s = Socket()
+            s.connect(InetSocketAddress(targetIp, port), connectionTimeoutMs)
+            s.tcpNoDelay = true          // disable Nagle – we flush explicitly after each message
+            socket = s
+            writer = BufferedWriter(
+                OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8)
+            )
+            lastIp = targetIp
+            lastPort = port
             Result.success(Unit)
         } catch (e: IOException) {
-            // Network-level failure (host unreachable, connection refused, timeout…)
             Result.failure(e)
         } catch (e: Exception) {
-            // JSON serialisation error or other unexpected failure.
             Result.failure(e)
         }
+    }
+
+    /**
+     * Closes the socket (and therefore all associated streams) without throwing.
+     * Must be called **inside** [writeMutex] or from [disconnect].
+     */
+    private fun closeSilently() {
+        try { socket?.close() } catch (_: Exception) {}
+        socket = null
+        writer = null
     }
 }
