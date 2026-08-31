@@ -1,6 +1,6 @@
-package com.example.app.network
+package com.example.itantra.network
 
-import com.example.app.model.NetworkMessage
+import com.example.itantra.model.NetworkMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -13,7 +13,7 @@ import java.net.Socket
 
 /**
  * Stateful P2P client that maintains a **persistent TCP connection** to a single
- * remote [com.example.app.network.P2PServer].
+ * remote [com.example.itantra.network.P2PServer].
  *
  * Motivation: opening/closing a TCP socket per phrase wastes a full three-way
  * handshake (~1–3 RTTs) on every transmission, drains CPU (TLS-less but still
@@ -40,6 +40,11 @@ import java.net.Socket
  * attempts a **single silent reconnect** before returning [Result.failure].
  * This handles transient Wi-Fi drops without requiring the caller to call
  * [connect] again.
+ *
+ * ## Uninitialized-IP guard
+ * If [sendMessage] is called before [connect], the client returns
+ * [Result.failure] with an [IllegalStateException] rather than attempting
+ * a connection to an empty host string (which would throw [java.net.UnknownHostException]).
  */
 class P2PClient {
 
@@ -90,11 +95,24 @@ class P2PClient {
      * If the underlying socket is found to be closed, a single silent reconnect
      * is attempted before giving up.  All I/O is confined to [Dispatchers.IO].
      *
+     * **Edge-case guard**: if [connect] was never called (i.e. [lastIp] is empty),
+     * this method returns [Result.failure] with an [IllegalStateException] instead
+     * of attempting a connection to an empty host string.
+     *
      * @return [Result.success] on a clean write+flush, [Result.failure] otherwise.
      */
     suspend fun sendMessage(message: NetworkMessage): Result<Unit> =
         withContext(Dispatchers.IO) {
             writeMutex.withLock {
+                // Guard: reject if connect() was never called.
+                if (lastIp.isEmpty()) {
+                    return@withContext Result.failure(
+                        IllegalStateException(
+                            "Cannot send message: Target IP is not initialized. Call connect() first."
+                        )
+                    )
+                }
+
                 // Attempt reconnect if the socket is no longer healthy.
                 if (socket == null || socket!!.isClosed || !socket!!.isConnected) {
                     val reconnect = openConnection(lastIp, lastPort)

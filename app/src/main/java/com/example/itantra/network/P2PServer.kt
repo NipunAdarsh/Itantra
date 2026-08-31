@@ -1,6 +1,6 @@
-package com.example.app.network
+package com.example.itantra.network
 
-import com.example.app.model.NetworkMessage
+import com.example.itantra.model.NetworkMessage
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -139,8 +139,10 @@ class P2PServer(
                         val payload = reader.readLine() ?: break   // null == client disconnected
                         try {
                             val message = NetworkMessage.fromJson(payload)
-                            withContext(Dispatchers.Default) {
-                                onMessageReceived(message)
+                            if (message != null) {
+                                withContext(Dispatchers.Default) {
+                                    onMessageReceived(message)
+                                }
                             }
                         } catch (_: Exception) {
                             // Malformed JSON for this one packet – keep the connection alive.

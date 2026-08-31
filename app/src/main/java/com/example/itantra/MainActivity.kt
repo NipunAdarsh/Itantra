@@ -1,6 +1,5 @@
 package com.example.itantra
 
-import android.Manifest
 import android.os.Bundle
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -19,6 +18,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.itantra.integration.NetworkManager
+import com.example.itantra.model.NetworkMessage
+import com.example.itantra.system.PermissionHandler
 import com.example.itantra.ui.theme.ITantraTheme
 
 class MainActivity : ComponentActivity() {
@@ -34,30 +36,56 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // ── Permissions ─────────────────────────────────────────────────────
+        // Use RequestMultiplePermissions to request all required permissions
+        // (RECORD_AUDIO, ACCESS_FINE_LOCATION, and NEARBY_WIFI_DEVICES on API 33+)
+        // in a single system dialog.
         val permissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { isGranted -> }
-        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-
-        networkManager = NetworkManager { receivedText ->
-            runOnUiThread {
-                transcript.add(0, "Received: $receivedText")
-                if (modeState.value == "RECEIVER") {
-                    sherpaEngine.synthesizeAndPlay(receivedText)
-                }
-            }
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { grants ->
+            // grants: Map<String, Boolean> — all results arrive here.
+            // Individual denials can be handled per-key if needed in the future.
         }
 
+        if (!PermissionHandler.hasAllPermissions(this)) {
+            permissionLauncher.launch(PermissionHandler.getRequiredPermissions())
+        }
+
+        // ── NetworkManager (integration layer) ─────────────────────────────
+        // Receives typed NetworkMessage objects; alert handling and UI dispatch
+        // are managed internally by NetworkManager.
+        networkManager = NetworkManager(
+            context = applicationContext,
+            onMessageReceived = { message: NetworkMessage ->
+                // This callback is invoked on Dispatchers.Main by NetworkManager.
+                val prefix = if (message.isAlert) "[ALERT] " else ""
+                transcript.add(0, "Received: $prefix${message.text}")
+
+                if (modeState.value == "RECEIVER") {
+                    val playbackText = if (message.isAlert) "[ALERT]${message.text}" else message.text
+                    sherpaEngine.synthesizeAndPlay(playbackText)
+                }
+            }
+        )
+
+        // ── SherpaOnnx STT/TTS engine ──────────────────────────────────────
         sherpaEngine = SherpaOnnxEngine(this) { sttText ->
             runOnUiThread {
-                val finalMessage = if (isEmergencyState.value) "[ALERT]$sttText" else sttText
-                transcript.add(0, "Sent: $finalMessage")
+                val isAlert = isEmergencyState.value
+                val displayPrefix = if (isAlert) "[ALERT] " else ""
+                transcript.add(0, "Sent: $displayPrefix$sttText")
+
                 if (modeState.value == "SENDER" && targetIpState.value.isNotEmpty()) {
-                    networkManager.sendText(targetIpState.value, finalMessage)
+                    networkManager.sendTextMessage(
+                        targetIp = targetIpState.value,
+                        text = sttText,
+                        isAlert = isAlert
+                    )
                 }
             }
         }
 
+        // ── Compose UI ─────────────────────────────────────────────────────
         setContent {
             ITantraTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -158,10 +186,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    
+
     override fun onDestroy() {
         super.onDestroy()
-        networkManager.stopServer()
+        networkManager.cleanup()
         sherpaEngine.stopListening()
     }
 }

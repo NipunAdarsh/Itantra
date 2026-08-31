@@ -1,4 +1,4 @@
-package com.example.app.model
+package com.example.itantra.model
 
 import org.json.JSONObject
 
@@ -13,13 +13,13 @@ import org.json.JSONObject
  * |------------|----------|------------------------|
  * | [msgId]    | `"id"`   | `"a3f9"`               |
  * | [text]     | `"txt"`  | `"Hello, world"`       |
- * | [lang]     | `"lng"`  | `"en"`                 |
+ * | [lang]     | `"lang"` | `"en"`                 |
  * | [isAlert]  | `"alt"`  | `true`                 |
  * | [timestamp]| `"ts"`   | `1724865600000`        |
  *
- * Example packet (51 bytes vs 87 bytes with verbose keys — a ~41 % saving):
+ * Example packet:
  * ```
- * {"id":"a3f9","txt":"Hello","lng":"en","alt":false,"ts":1724865600000}
+ * {"id":"a3f9","txt":"Hello","lang":"en","alt":false,"ts":1724865600000}
  * ```
  *
  * Serialization is handled by [toJson] / [fromJson] so all other code remains
@@ -37,28 +37,34 @@ data class NetworkMessage(
      * The output is a single line with no trailing newline (callers append one if needed).
      */
     fun toJson(): String = JSONObject().apply {
-        put("id",  msgId)
-        put("txt", text)
-        put("lng", lang)
-        put("alt", isAlert)
-        put("ts",  timestamp)
+        put("id",   msgId)
+        put("txt",  text)
+        put("lang", lang)
+        put("alt",  isAlert)
+        put("ts",   timestamp)
     }.toString()
 
     companion object {
         /**
          * Parses a compact JSON string (produced by [toJson]) into a [NetworkMessage].
          *
-         * @throws org.json.JSONException if any required key is absent or has the wrong type.
+         * @param jsonStr The raw JSON payload received over the wire.
+         * @return The deserialized [NetworkMessage], or `null` if the payload is malformed
+         *         or missing required keys.
          */
-        fun fromJson(jsonStr: String): NetworkMessage {
-            val j = JSONObject(jsonStr)
-            return NetworkMessage(
-                msgId     = j.getString("id"),
-                text      = j.getString("txt"),
-                lang      = j.getString("lng"),
-                isAlert   = j.getBoolean("alt"),
-                timestamp = j.getLong("ts")
-            )
+        fun fromJson(jsonStr: String): NetworkMessage? {
+            return try {
+                val j = JSONObject(jsonStr)
+                NetworkMessage(
+                    msgId     = j.getString("id"),
+                    text      = j.getString("txt"),
+                    lang      = j.getString("lang"),
+                    isAlert   = j.getBoolean("alt"),
+                    timestamp = j.getLong("ts")
+                )
+            } catch (e: Exception) {
+                null
+            }
         }
     }
 }
