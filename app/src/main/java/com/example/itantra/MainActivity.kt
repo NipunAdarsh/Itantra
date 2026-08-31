@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.itantra.ui.P2pState
 import com.example.itantra.ui.TranscriptMessage
 import com.example.itantra.ui.WalkieTalkieScreen
+import com.example.itantra.PipelineIntegrator
 import com.example.itantra.ui.theme.ITantraTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch

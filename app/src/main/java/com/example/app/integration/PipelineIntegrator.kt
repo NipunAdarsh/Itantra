@@ -1,4 +1,4 @@
-package com.example.app.integration
+package com.example.itantra
 
 import android.content.Context
 import com.example.app.model.NetworkMessage
@@ -8,6 +8,7 @@ import com.example.app.system.AlertManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -175,7 +176,9 @@ class PipelineIntegrator(private val context: Context) {
         }
         // Disconnect the persistent client socket gracefully.
         scope.launch(Dispatchers.IO) {
-            client.disconnect()
+            withContext(NonCancellable) {
+                client.disconnect()
+            }
         }
         // Cancel the scope last – this cancels the disconnect coroutine only if
         // it hasn't launched yet, which is safe because disconnect() is best-effort.
