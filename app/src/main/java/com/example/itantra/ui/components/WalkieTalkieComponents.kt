@@ -235,6 +235,7 @@ fun <T> VoiceSelectorCard(
     selectedLanguage  : T,
     allLanguages      : Array<T>,
     displayLabel      : (T) -> String,
+    itemLabel         : (T) -> String = displayLabel,
     onLanguageSelected: (T) -> Unit,
     modifier          : Modifier = Modifier
 ) {
@@ -252,26 +253,31 @@ fun <T> VoiceSelectorCard(
         ) {
             Row(
                 modifier              = Modifier
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
                     .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment     = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                Column(
+                    verticalArrangement   = Arrangement.spacedBy(2.dp)
                 ) {
-                    Text("🔊", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text  = "VOICE (AUTO-MATCHES INCOMING LANGUAGE)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color      = OnSurfaceVariant,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
                     Text(
                         text  = displayLabel(selectedLanguage),
                         style = MaterialTheme.typography.titleSmall.copy(
                             color      = OnSurface,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.SemiBold
                         )
                     )
                 }
                 Text(
-                    text  = "›",
+                    text  = "\u25BC",
                     style = MaterialTheme.typography.titleMedium.copy(color = OnSurfaceVariant)
                 )
             }
@@ -286,14 +292,14 @@ fun <T> VoiceSelectorCard(
                 DropdownMenuItem(
                     text = {
                         Text(
-                            displayLabel(lang),
+                            itemLabel(lang),
                             style = MaterialTheme.typography.bodyMedium.copy(color = OnSurface)
                         )
                     },
                     onClick = { onLanguageSelected(lang); expanded = false },
                     leadingIcon = {
                         if (lang == selectedLanguage) {
-                            Text("✓", style = MaterialTheme.typography.bodyMedium.copy(color = Primary))
+                            Text("\u2713", style = MaterialTheme.typography.bodyMedium.copy(color = Primary))
                         }
                     },
                     colors = MenuDefaults.itemColors(
@@ -306,7 +312,7 @@ fun <T> VoiceSelectorCard(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // 5 ─ EmergencyToggleCard
 //     Animated card — background transitions to red tint when active.
 //     Toggle events are intercepted by WalkieTalkieScreen for confirmation dialog.

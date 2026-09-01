@@ -169,7 +169,8 @@ fun WalkieTalkieScreen(
                     VoiceSelectorCard(
                         selectedLanguage   = selectedLanguage,
                         allLanguages       = AppLanguage.values(),
-                        displayLabel       = { it.label },
+                        displayLabel       = { "${it.flag} ${it.label}" },
+                        itemLabel          = { "${it.flag} ${it.label}" },
                         onLanguageSelected = onVoiceChange
                     )
                 }

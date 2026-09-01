@@ -53,7 +53,7 @@ class NetworkManager(
                         InetSocketAddress(targetIp, TCP_PORT), 3000
                     )
                     val writer = PrintWriter(
-                        OutputStreamWriter(socket.getOutputStream()),
+                        OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8),
                         true
                     )
                     writer.println(text)
@@ -102,11 +102,11 @@ class NetworkManager(
     private fun handleClient(socket: Socket) {
         try {
             val reader = BufferedReader(
-                InputStreamReader(socket.getInputStream())
+                InputStreamReader(socket.getInputStream(), Charsets.UTF_8)
             )
             val text = reader.readLine()
             if (!text.isNullOrBlank()) {
-                Log.d("NetworkManager", "Received text: $text")
+                Log.d("NetworkManager", "Received raw bytes as UTF-8 string: $text")
                 onTextReceived(text)
             }
             socket.close()

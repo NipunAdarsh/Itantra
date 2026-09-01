@@ -37,6 +37,12 @@ android {
     buildFeatures {
         compose = true
     }
+    packaging {
+        resources {
+            excludes += "sherpa-onnx/**"
+            excludes += "/sherpa-onnx/**"
+        }
+    }
 }
 
 dependencies {
