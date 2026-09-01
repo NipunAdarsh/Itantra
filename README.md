@@ -60,19 +60,19 @@ flowchart TD
         MicA["Microphone Input (16kHz PCM)"] --> AudioAccA["Audio Buffer Accumulator (PTT)"]
         AudioAccA --> STTA{"Dual-Engine STT Selector"}
         
-        STTA -- "English Active" --> SenseVoiceA["SenseVoice Small Int8 (useITN=true)"]
-        STTA -- "Hindi Active" --> WhisperA["Whisper-Base Int8 (task=transcribe)"]
+        STTA -->|English Active| SenseVoiceA["SenseVoice Small Int8 (useITN=true)"]
+        STTA -->|Hindi Active| WhisperA["Whisper-Base Int8 (task=transcribe)"]
         
         SenseVoiceA --> CleanA["Sanitize Text & Strip Tokens"]
         WhisperA --> CleanA
         
-        CleanA --> NetSendA["TCP Socket Client :8888 (UTF-8)"]
-        UDPSendA["UDP Beacon Broadcaster :9999"] -. "Discovery" .-> Subnet["Local Subnet / Wi-Fi / Hotspot"]
+        CleanA --> NetSendA["TCP Socket Client (Port 8888)"]
+        UDPSendA["UDP Beacon Broadcaster (Port 9999)"] -.->|Discovery| Subnet["Local Subnet / Wi-Fi / Hotspot"]
         
-        NetRecvA["TCP Socket Server :8888"] <-- "Incoming UTF-8" -- Subnet
+        Subnet -->|Incoming UTF-8| NetRecvA["TCP Socket Server (Port 8888)"]
         NetRecvA --> ScriptDetA{"Script Analyzer"}
-        ScriptDetA -- "Latin" --> PiperEngA["Piper Amy-Low TTS"]
-        ScriptDetA -- "Devanagari" --> PiperHinA["Piper Pratham TTS"]
+        ScriptDetA -->|Latin| PiperEngA["Piper Amy-Low TTS"]
+        ScriptDetA -->|Devanagari| PiperHinA["Piper Pratham TTS"]
         
         PiperEngA --> AudioTrackA["AudioTrack (MODE_STREAM)"]
         PiperHinA --> AudioTrackA
@@ -80,13 +80,13 @@ flowchart TD
     end
 
     subgraph DeviceB ["Device B (Remote Peer Node)"]
-        NetSendA ==>|Full-Duplex TCP Socket| NetRecvB["TCP Socket Server :8888"]
+        NetSendA -->|Full-Duplex TCP Socket| NetRecvB["TCP Socket Server (Port 8888)"]
         NetRecvB --> TTSB["Piper Neural TTS (Auto-Switch Voice)"]
         TTSB --> SpkB["Speaker Output"]
         
         MicB["Microphone Input"] --> STTB["SenseVoice / Whisper STT"]
-        STTB --> NetSendB["TCP Socket Client :8888"]
-        NetSendB ==>|Full-Duplex TCP Socket| NetRecvA
+        STTB --> NetSendB["TCP Socket Client (Port 8888)"]
+        NetSendB -->|Full-Duplex TCP Socket| NetRecvA
     end
 ```
 
