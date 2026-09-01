@@ -1,220 +1,228 @@
-# 🎙️ iTantra — Neural Offline Walkie-Talkie
+# iTantra: Neural Offline Walkie-Talkie
 
 <div align="center">
 
-> **Zero-Cloud. Zero-Server. Fully Offline Neural Voice Walkie-Talkie for Android.**  
-> *P2P Auto-Discovery • Dual-Engine Speech-to-Text • High-Fidelity Neural TTS • Full-Duplex Local Network Comms*
+**Zero-Cloud, Fully Offline Neural Voice Communication System for Android**  
+*Peer-to-Peer Auto-Discovery | Dual-Engine Speech Recognition | Neural Voice Synthesis | Full-Duplex Socket Protocol*
 
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.0+-7F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4.svg?style=for-the-badge&logo=android&logoColor=white)](https://developer.android.com/jetpack/compose)
-[![ONNX](https://img.shields.io/badge/sherpa--onnx-v1.13.6-005CED.svg?style=for-the-badge&logo=onnx&logoColor=white)](https://github.com/k2-fsa/sherpa-onnx)
-[![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B%20(API%2026%2B)-3DDC84.svg?style=for-the-badge&logo=android&logoColor=white)](https://android.com)
-[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=for-the-badge)](LICENSE)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.0+-7F52FF.svg?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com/jetpack/compose)
+[![ONNX](https://img.shields.io/badge/sherpa--onnx-v1.13.6-005CED.svg?style=flat-square&logo=onnx&logoColor=white)](https://github.com/k2-fsa/sherpa-onnx)
+[![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B%20(API%2026%2B)-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://android.com)
+[![Architecture](https://img.shields.io/badge/Architecture-ARM64--v8a-blueviolet.svg?style=flat-square)](https://developer.android.com/ndk)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
-## 🌟 Key Capabilities
+## Executive Summary
 
-* 🌐 **100% Offline & Private:** Zero telemetry, zero cloud dependencies, zero external APIs. Complete neural inference runs directly on the device's CPU/NPU.
-* 🤖 **Dual-Engine On-Device STT:**
-  * **English:** [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) Int8 (ultra-fast, inverse text normalization, emotion token filtering).
-  * **Hindi:** [OpenAI Whisper-Base](https://github.com/openai/whisper) Int8 (forced Hindi transcription, high accuracy, low latency).
-* 🔊 **Piper Neural Text-to-Speech (TTS):**
-  * **English Voice:** Piper Amy-Low (`en_US`).
-  * **Hindi Voice:** Piper Pratham-Medium (`hi_IN`) with unified `espeak-ng-data` phonemization.
-* 📡 **Zero-Config P2P Auto-Discovery:** Instant UDP discovery beacons over port `9999` automatically connect peers on the same local Wi-Fi or mobile hotspot.
-* ⚡ **Full-Duplex TCP Sockets:** Non-blocking asynchronous network pipeline over port `8888` with explicit `UTF-8` serialization and exponential backoff.
-* 🚨 **Tactical Emergency Broadcast:** Audio stream volume override to `STREAM_ALARM` with distinctive visual flashing alerts.
-* 🎨 **Neural Tactical UI:** Built with Jetpack Compose & Material 3, following Apple Human Interface Guidelines (HIG) with color-blind accessible visual cues and tactile haptics.
+iTantra is an offline-first, peer-to-peer neural voice communication application engineered for high-assurance, low-latency transmission across air-gapped local area networks. By eliminating external cloud dependencies, remote servers, and intermediate proxies, the entire computational pipeline—including Voice Activity Detection (VAD), Automatic Speech Recognition (ASR/STT), Socket Transport, and Text-to-Speech (TTS)—executes entirely on-device using quantized ONNX neural networks.
 
 ---
 
-## 📸 Interface & Visual Showcase
+## Core Technical Highlights
+
+* **Air-Gapped Privacy & Security:** Zero telemetry, no data egress, and no cloud infrastructure dependencies. All voice recognition and synthesis tasks operate locally on the device CPU/NPU.
+* **Dual-Engine On-Device STT:**
+  * **English Engine:** SenseVoice Small Int8 with Inverse Text Normalization (`useITN=true`) and automated non-linguistic token sanitization.
+  * **Hindi Engine:** OpenAI Whisper-Base Int8 with forced language decoding (`language="hi"`, `task="transcribe"`) offering high accuracy for Devanagari speech.
+* **Piper Neural TTS Synthesis:**
+  * **English Voice Model:** Piper Amy-Low (`en_US`).
+  * **Hindi Voice Model:** Piper Pratham-Medium (`hi_IN`) with unified `espeak-ng` phonemization dictionary tables.
+* **Zero-Configuration P2P Auto-Discovery:** Broadcasts UDP discovery packets over port `9999` with automatic `WifiManager.MulticastLock` management to seamlessly discover and connect active nodes on the subnet.
+* **Full-Duplex Socket Protocol:** Concurrent asynchronous TCP client/server architecture over port `8888` featuring non-blocking coroutine dispatch, UTF-8 byte serialization, and exponential backoff retry policies.
+* **Emergency Broadcast Protocol:** Priority messaging mechanism that intercepts standard audio routing, overrides receiver volume to `STREAM_ALARM`, and displays high-visibility visual alert states.
+* **Tactical Interface Architecture:** Developed using Jetpack Compose and Material 3, incorporating Apple Human Interface Guidelines (HIG) with color-blind accessible visual indicators and tactile haptic feedback.
+
+---
+
+## User Interface & Visual States
 
 | 1. Connected & Ready (Idle) | 2. Live Neural Recording |
 | :---: | :---: |
 | <img src="docs/screenshots/01_connected_idle.png" width="360" alt="Connected - Idle State" /> | <img src="docs/screenshots/02_connected_recording.png" width="360" alt="Connected - Recording State" /> |
-| **Connected & Idle (English Voice)**<br/>*Peer IP auto-discovered, signal indicators active, monospace timestamped transcript history.* | **Active Neural Recording (Hindi Voice)**<br/>*Neon green radial glow, live waveform bars, PTT utterance accumulation.* |
+| **Connected & Idle (English Voice)**<br/>*Peer IP resolved via UDP broadcast, system readiness indicators active, monospace timestamped transcript history.* | **Active Neural Recording (Hindi Voice)**<br/>*Radial glow state, dynamic waveform visualizer, full-utterance buffer accumulation.* |
 
-| 3. Emergency Alert Broadcast | 4. Searching & Auto-Discovery |
+| 3. Emergency Alert Broadcast | 4. Searching & Discovery |
 | :---: | :---: |
 | <img src="docs/screenshots/03_emergency_recording.png" width="360" alt="Emergency Alert State" /> | <img src="docs/screenshots/04_searching_empty.png" width="360" alt="Searching - Empty State" /> |
-| **Emergency Priority Broadcast**<br/>*Pulsing red core, high-contrast ALERT pill, automatic `STREAM_ALARM` volume boost.* | **UDP Discovery in Progress**<br/>*Triple-redundant status indicator (`↻ Searching`) broadcasting on port 9999.* |
+| **Emergency Priority Broadcast**<br/>*Pulsing core indicator, high-contrast ALERT banner, automated `STREAM_ALARM` receiver volume boost.* | **UDP Network Discovery**<br/>*Triple-redundant status indicator (`Searching`) broadcasting beacons across local network interfaces.* |
 
 ---
 
-## 🏗️ System Architecture
+## End-to-End System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph DeviceA ["📱 Device A (Local)"]
-        MicA["🎤 Microphone (16kHz PCM)"] --> AudioAccA["Audio Accumulator (PTT Hold)"]
-        AudioAccA --> STTA{"Dual-Engine STT"}
+    subgraph DeviceA ["Device A (Local Node)"]
+        MicA["Microphone Input (16kHz PCM)"] --> AudioAccA["Audio Buffer Accumulator (PTT)"]
+        AudioAccA --> STTA{"Dual-Engine STT Selector"}
         
-        STTA -- "English Mode" --> SenseVoiceA["SenseVoice Int8 (useITN=true)"]
-        STTA -- "Hindi Mode" --> WhisperA["Whisper-Base Int8 (task=transcribe)"]
+        STTA -- "English Active" --> SenseVoiceA["SenseVoice Small Int8 (useITN=true)"]
+        STTA -- "Hindi Active" --> WhisperA["Whisper-Base Int8 (task=transcribe)"]
         
         SenseVoiceA --> CleanA["Sanitize Text & Strip Tokens"]
         WhisperA --> CleanA
         
         CleanA --> NetSendA["TCP Socket Client :8888 (UTF-8)"]
-        UDPSendA["UDP Beacon Sender :9999"] -. "Discovery" .-> WiFiNet["Local Wi-Fi / Hotspot"]
+        UDPSendA["UDP Beacon Broadcaster :9999"] -. "Discovery" .-> Subnet["Local Subnet / Wi-Fi / Hotspot"]
         
-        NetRecvA["TCP Socket Server :8888"] <-- "Incoming UTF-8" -- WiFiNet
-        NetRecvA --> ScriptDetA{"Script Detector"}
+        NetRecvA["TCP Socket Server :8888"] <-- "Incoming UTF-8" -- Subnet
+        NetRecvA --> ScriptDetA{"Script Analyzer"}
         ScriptDetA -- "Latin" --> PiperEngA["Piper Amy-Low TTS"]
         ScriptDetA -- "Devanagari" --> PiperHinA["Piper Pratham TTS"]
         
         PiperEngA --> AudioTrackA["AudioTrack (MODE_STREAM)"]
         PiperHinA --> AudioTrackA
-        AudioTrackA --> SpkA["🔊 Speaker / Alarm Stream"]
+        AudioTrackA --> SpkA["Speaker / Alarm Stream"]
     end
 
-    subgraph DeviceB ["📱 Device B (Remote Peer)"]
-        NetSendA ==>|Full-Duplex TCP| NetRecvB["TCP Socket Server :8888"]
-        NetRecvB --> TTSB["Piper Neural TTS (Auto-Detect Script)"]
-        TTSB --> SpkB["🔊 Speaker Output"]
+    subgraph DeviceB ["Device B (Remote Peer Node)"]
+        NetSendA ==>|Full-Duplex TCP Socket| NetRecvB["TCP Socket Server :8888"]
+        NetRecvB --> TTSB["Piper Neural TTS (Auto-Switch Voice)"]
+        TTSB --> SpkB["Speaker Output"]
         
-        MicB["🎤 Microphone"] --> STTB["SenseVoice / Whisper STT"]
+        MicB["Microphone Input"] --> STTB["SenseVoice / Whisper STT"]
         STTB --> NetSendB["TCP Socket Client :8888"]
-        NetSendB ==>|Full-Duplex TCP| NetRecvA
+        NetSendB ==>|Full-Duplex TCP Socket| NetRecvA
     end
 ```
 
 ---
 
-## 🧠 Dual-Engine Neural Pipeline
+## Neural Inference Pipeline Specification
 
 ```
-                                   ┌──────────────────────────────────────────────┐
-                                   │              Input Audio Stream              │
-                                   │           (16,000 Hz, 16-bit Mono)           │
-                                   └──────────────────────┬───────────────────────┘
-                                                          │
-                                         ┌────────────────┴────────────────┐
-                                         ▼                                 ▼
-                         ┌──────────────────────────────┐  ┌──────────────────────────────┐
-                         │   AppLanguage.ENGLISH        │  │   AppLanguage.HINDI          │
-                         │   SenseVoice Small Int8      │  │   Whisper-Base Int8          │
-                         ├──────────────────────────────┤  ├──────────────────────────────┤
-                         │ • Language: "en" (Hardcoded) │  │ • Language: "hi" (Hardcoded) │
-                         │ • Inverse Text Normalization │  │ • Task: "transcribe"         │
-                         │ • Emotion Token Sanitizer    │  │ • Greedy Decoding Search     │
-                         │ • Execution: Dynamic Multi-  │  │ • Execution: Dynamic Multi-  │
-                         │   Threaded (2-4 Cores)       │  │   Threaded (2-4 Cores)       │
-                         └──────────────┬───────────────┘  └──────────────┬───────────────┘
-                                        │                                 │
-                                        └────────────────┬────────────────┘
-                                                         ▼
-                                   ┌──────────────────────────────────────────────┐
-                                   │              Sanitized UTF-8 Text            │
-                                   │        (Transmitted via TCP Port 8888)       │
-                                   └──────────────────────┬───────────────────────┘
-                                                          ▼
-                                   ┌──────────────────────────────────────────────┐
-                                   │           Piper VITS Neural TTS              │
-                                   │   Shared espeak-ng-data (Amy & Pratham)      │
-                                   └──────────────────────┬───────────────────────┘
-                                                          ▼
-                                   ┌──────────────────────────────────────────────┐
-                                   │         AudioTrack (MODE_STREAM) 16kHz       │
-                                   └──────────────────────────────────────────────┘
+                                   +----------------------------------------------+
+                                   |              Input Audio Stream              |
+                                   |           (16,000 Hz, 16-bit Mono)           |
+                                   +----------------------┬-----------------------+
+                                                          |
+                                         +----------------┴----------------+
+                                         |                                 |
+                                         v                                 v
+                         +------------------------------+  +------------------------------+
+                         |   AppLanguage.ENGLISH        |  |   AppLanguage.HINDI          |
+                         |   SenseVoice Small Int8      |  |   Whisper-Base Int8          |
+                         +------------------------------+  +------------------------------+
+                         | * Language: "en" (Hardcoded) |  | * Language: "hi" (Hardcoded) |
+                         | * Inverse Text Normalization |  | * Task: "transcribe"         |
+                         | * Emotion Token Sanitizer    |  | * Greedy Search Decoding     |
+                         | * Multi-Threaded Inference   |  | * Multi-Threaded Inference   |
+                         |   (2-4 CPU Cores)            |  |   (2-4 CPU Cores)            |
+                         +--------------┬---------------+  +--------------┬---------------+
+                                        |                                 |
+                                        +----------------┬----------------+
+                                                         |
+                                                         v
+                                   +----------------------------------------------+
+                                   |              Sanitized UTF-8 Text            |
+                                   |        (Transmitted via TCP Port 8888)       |
+                                   +----------------------┬-----------------------+
+                                                          |
+                                                          v
+                                   +----------------------------------------------+
+                                   |            Piper VITS Neural TTS             |
+                                   |   Shared espeak-ng-data (Amy & Pratham)      |
+                                   +----------------------┬-----------------------+
+                                                          |
+                                                          v
+                                   +----------------------------------------------+
+                                   |        AudioTrack (MODE_STREAM) 16kHz        |
+                                   +----------------------------------------------+
 ```
 
 ---
 
-## 📱 State & Interaction Reference
+## State Machine & Interaction Matrix
 
-| State | Visual Indicator | PTT Button | Audio Channel | Underlying Action |
+| Operational State | Visual Cue | Push-to-Talk Component | Audio Routing | System Behavior |
 |---|---|---|---|---|
-| **Searching** | `↻ Searching` (Amber) | Static Dark Circle + Green Border | Standby | Broadcasting UDP beacons on port `9999` across active network interfaces. |
-| **Connected - Idle** | `✓ Connected IP` (Green) | Static Dark Circle + Green Border | Standby | Ready for zero-latency Push-to-Talk transmission. |
-| **Recording (Active)** | `✓ Connected IP` (Green) | Pulsing Neon Green + Waveform Bars | Mic Input (16kHz PCM) | Audio buffer accumulates full utterance in memory until release. |
-| **Transmitting** | `✓ Connected IP` (Green) | Amber Ring + "▶ Transmitting" | TCP Socket Client | Dispatches sanitized UTF-8 payload over TCP port `8888`. |
-| **Emergency Mode** | `⚠ ALERT` (Red Badge) | Pulsing Red Core + Ambient Halo | `STREAM_ALARM` Override | Dispatches `[ALERT]` prefixed payload; triggers maximum alarm volume on receiver. |
+| **Searching** | `Searching` (Amber) | Dark Core + Emerald Stroke | Inactive | Broadcasts UDP beacons over port `9999` across active network interfaces. |
+| **Connected - Idle** | `Connected [IP]` (Green) | Dark Core + Emerald Stroke | Standby | Node registered and ready for zero-latency Push-to-Talk activation. |
+| **Recording (Active)** | `Connected [IP]` (Green) | Radial Pulse + Waveform Bars | Mic Input (16kHz PCM) | Accumulates unchunked audio buffers in memory throughout PTT hold. |
+| **Transmitting** | `Connected [IP]` (Green) | Amber Ring + `Transmitting` | TCP Socket Client | Dispatches sanitized UTF-8 payload over TCP port `8888`. |
+| **Emergency Mode** | `ALERT` (Red Pill) | Pulsing Red Core + Ambient Halo | `STREAM_ALARM` Override | Prepends `[ALERT]` token; forces maximum alarm volume on receiver. |
 
 ---
 
-## ⚡ APK Optimization & Performance
+## Packaging & Binary Optimization
 
-Through rigorous resource analysis and model selection, iTantra delivers state-of-the-art on-device AI in an optimized mobile package:
+Through structural dependency auditing and model quantization, the binary footprint has been streamlined for resource-constrained edge devices:
 
-* **Packaging Resource Filter:** Excluded ~107 MB of unwanted desktop binaries (OSX `.dylib`, Windows `.dll`) bundled in upstream Java dependencies.
-* **Model Weight Optimization:** Replaced large 374 MB Whisper models with optimized 153 MB Whisper-base Int8 weights, boosting decode speed by ~2.5× while maintaining high Hindi transcription accuracy.
-* **Asset Pruning:** Stripped non-English/non-Hindi dictionary files from `espeak-ng-data`, saving ~18 MB.
-* **Total APK Size:** Reduced from **635 MB** down to **~439 MB** (~30% overall size reduction with zero feature loss).
+* **Desktop Native Library Exclusion:** Excluded ~107 MB of unused desktop binaries (OSX `.dylib` and Windows `.dll`) inadvertently packaged by upstream Java libraries.
+* **Optimized Whisper Model Sizing:** Replaced 374 MB Whisper-small weights with 153 MB Whisper-base Int8 weights, improving decoding latency by ~2.5x with negligible impact on Hindi transcription fidelity.
+* **Dictionary Table Pruning:** Removed redundant non-English/non-Hindi phonetic dictionaries from `espeak-ng-data`, reclaiming ~18 MB of storage.
+* **Net Package Reduction:** Total APK size decreased from **635 MB** to **~439 MB** (~30% overall size reduction).
 
 ---
 
-## 🛠️ Tech Stack & Components
+## Technical Stack & Library Manifest
 
-| Component | Technology | Description |
+| Layer | Component | Specification |
 |---|---|---|
-| **Language & Tooling** | Kotlin 2.0+ / Coroutines / Flow | Asynchronous concurrency, supervisor jobs, thread locks. |
-| **UI Framework** | Jetpack Compose / Material 3 | Declarative tactical UI with custom canvas waveforms. |
-| **Neural Runtime** | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) v1.13.6 JNI | Hardware-accelerated on-device neural inference runtime. |
-| **English STT** | SenseVoice Small Int8 | Fast offline speech recognition with Inverse Text Normalization. |
-| **Hindi STT** | OpenAI Whisper-Base Int8 | Robust multilingual speech recognition optimized for Hindi. |
-| **Voice Activity Detection** | Silero VAD v5 | High-precision speech boundary detection. |
-| **Neural TTS** | Piper VITS (`en_US-amy-low`, `hi_IN-pratham-medium`) | Natural offline voice synthesis with unified `espeak-ng` tables. |
-| **Local Networking** | Java/Android Sockets | UDP Discovery (Port `9999`), TCP Full-Duplex Comms (Port `8888`). |
+| **Platform Language** | Kotlin 2.0+ | Coroutine concurrency, StateFlow, SupervisorJobs, thread synchronization locks. |
+| **UI Framework** | Jetpack Compose / Material 3 | Declarative components, custom Canvas waveform visualizers, adaptive layouts. |
+| **Inference Engine** | sherpa-onnx v1.13.6 | Hardware-accelerated JNI runtime interfacing ONNX Runtime Mobile. |
+| **English STT** | SenseVoice Small Int8 | End-to-end non-autoregressive acoustic model with ITN support. |
+| **Hindi STT** | OpenAI Whisper-Base Int8 | Sequence-to-sequence encoder-decoder model optimized for Hindi speech. |
+| **Voice Activity Detection** | Silero VAD v5 | Low-latency neural voice activity and speech segment detection. |
+| **Neural TTS** | Piper VITS (`en_US`, `hi_IN`) | High-quality text-to-phoneme-to-waveform neural voice synthesis. |
+| **Network Protocol** | Standard Java/Android Sockets | UDP Discovery (Port `9999`), TCP Stream Comms (Port `8888`). |
 
 ---
 
-## 🚀 Getting Started
+## Setup & Deployment Guide
 
-### 1. Requirements
-* Two physical Android devices running **Android 8.0 (API 26) or higher** (ARM64-v8a architecture).
-* Both devices connected to the **same Wi-Fi network** or one connected to the other's **Mobile Hotspot**.
-* [Git LFS](https://git-lfs.github.com/) installed on your machine for cloning model weights.
+### Prerequisites
+* Two physical Android devices running **Android 8.0 (API level 26) or newer** on `arm64-v8a` hardware.
+* Both devices associated with the **same local Wi-Fi network** or interconnected via a **Mobile Hotspot**.
+* [Git LFS](https://git-lfs.github.com/) installed locally to pull ONNX model checkpoints.
 
-### 2. Clone Repository with Git LFS
+### 1. Clone Repository & Pull Model Checkpoints
 ```bash
 # Clone the repository
 git clone https://github.com/NipunAdarsh/Itantra.git
 cd Itantra
 
-# Pull on-device neural model weights
+# Retrieve LFS-tracked neural model binaries
 git lfs pull
 ```
 
-### 3. Build & Run
-Open the project in **Android Studio (Ladybug 2024.2.1+)** or build using the Gradle command line:
-
+### 2. Build via Gradle
 ```bash
-# Compile and build the debug APK
+# Compile and build the debug APK package
 ./gradlew assembleDebug
 
-# Install on connected device via ADB
+# Deploy to connected device via ADB
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### 4. How to Use
-1. Install and launch **iTantra** on both phones.
-2. Grant the required **Microphone** and **Location/Nearby** permissions.
-3. The app will automatically discover the peer device within 1–2 seconds and display `✓ Connected <Peer_IP>`.
-4. **Hold the central PTT button** to speak; release when finished.
-5. Your speech is transcribed locally, sent over the local network, and spoken aloud on the peer device in real time!
+### 3. Operational Workflow
+1. Launch **iTantra** on both target devices.
+2. Grant requested **Microphone** and **Location/Nearby Devices** runtime permissions.
+3. Observe the top status bar automatically transition to `Connected <Peer_IP>` within 1–2 seconds.
+4. **Press and hold the PTT button** to record speech. Release to automatically transcribe, transmit, and synthesize voice on the peer terminal.
 
 ---
 
-## 🔒 Security & Privacy
+## Security, Privacy & Network Integrity
 
-* 🛡️ **Zero Cloud Exposure:** Audio never touches any external server, cloud endpoint, or analytics tracker.
-* 🔒 **Air-Gapped Operation:** Works seamlessly in isolated, private networks with no internet connection required.
-* 📦 **Direct Socket Communication:** P2P traffic flows point-to-point directly between device IP addresses on the local subnet.
+* **Zero Cloud Ingestion:** Audio waveforms and text payloads never leave the local area network.
+* **Air-Gapped Readiness:** Fully operational in restricted, off-grid environments without public internet access.
+* **Point-to-Point Architecture:** Socket traffic is routed directly between the source and destination IP addresses on the local subnet.
 
 ---
 
-## ⚖️ License & Acknowledgements
+## License & Acknowledgements
 
-This project is open-source under the Apache 2.0 License.
+This project is licensed under the Apache License 2.0.
 
-Special thanks to the open-source voice AI community:
-* [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by Next-gen Kaldi / K2-FSA team
-* [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) by FunAudioLLM / Alibaba
-* [Whisper](https://github.com/openai/whisper) by OpenAI
-* [Piper TTS](https://github.com/rhasspy/piper) by Rhasspy team
-* [Silero VAD](https://github.com/snakers4/silero-vad) by Silero team
+Acknowledgements to the open-source speech AI initiatives:
+* [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Next-gen Kaldi / K2-FSA)
+* [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) (FunAudioLLM / Alibaba)
+* [Whisper](https://github.com/openai/whisper) (OpenAI)
+* [Piper TTS](https://github.com/rhasspy/piper) (Rhasspy Voice Assistant)
+* [Silero VAD](https://github.com/snakers4/silero-vad) (Silero Team)
