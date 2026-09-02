@@ -224,6 +224,14 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
+## Research & Hackathon Documentation
+
+For complete academic citations, mathematical derivations, link budget analyses, market metrics, and the official 6-slide presentation script for the Smart India Hackathon (SIH) 2026, consult:
+
+* **[SIH 2026 Research Dossier & Pitch Guide](docs/SIH_2026_RESEARCH_DOSSIER.md)**: Exhaustive technical documentation including BibTeX citations (AI4Bharat, SenseVoice, VITS, Silero VAD, ISCII/Unicode), LoRa Time-on-Air mathematical proofs, TAM/SAM/SOM market sizing, and jury rebuttal preparation.
+
+---
+
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
