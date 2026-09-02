@@ -14,33 +14,50 @@ enum class AppLanguage(
     val flag: String
 ) {
     ENGLISH("en", "English", "🇬🇧"),
-    HINDI("hi", "Hindi", "🇮🇳")
+    HINDI("hi", "Hindi", "🇮🇳"),
+    GUJARATI("gu", "Gujarati", "🇮🇳"),
+    MARATHI("mr", "Marathi", "🇮🇳"),
+    KANNADA("kn", "Kannada", "🇮🇳"),
+    MALAYALAM("ml", "Malayalam", "🇮🇳"),
+    TAMIL("ta", "Tamil", "🇮🇳"),
+    TELUGU("te", "Telugu", "🇮🇳"),
+    ODIA("or", "Odia", "🇮🇳"),
+    BENGALI("bn", "Bengali", "🇮🇳")
+}
+
+enum class OperationalMode {
+    WALKIE_TALKIE,
+    PHONE_MODE
 }
 
 class SherpaOnnxEngine(
     private val context: Context,
-    private val onTextReady: (String) -> Unit
+    private val onTextReady: (String) -> Unit,
+    private val onVadSpeechStateChanged: ((Boolean) -> Unit)? = null
 ) {
     private val TAG = "SherpaOnnxEngine"
     private val SENSEVOICE_DIR = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-    private val WHISPER_BASE_DIR = "sherpa-onnx-whisper-base"
+    private val INDIC_CONFORMER_DIR = "indic-conformer-onnx-sherpa"
 
-    // Thread synchronization lock for all native JNI pointer operations
+    // Synchronization locks
     private val engineLock = Any()
     private val audioBufferLock = Any()
 
     private var recognizer: OfflineRecognizer? = null
+    private var activeSttModelType: String? = null // "sensevoice" or "indicconformer"
     private var vad: Vad? = null
     private var tts: OfflineTts? = null
     private var currentLanguage = AppLanguage.ENGLISH
-    
+    private var currentOperationalMode = OperationalMode.WALKIE_TALKIE
+
     @Volatile private var isTtsSwitching = false
     @Volatile private var ttsReady = false
     @Volatile private var isSttSwitching = false
     @Volatile private var sttReady = false
-    
+
     private var audioRecord: AudioRecord? = null
     @Volatile private var isListening = false
+    @Volatile private var isContinuousPhoneModeActive = false
     private val scope = CoroutineScope(Dispatchers.IO)
     private var recordingJob: Job? = null
     private val audioAccumulator = mutableListOf<Float>()
@@ -57,7 +74,7 @@ class SherpaOnnxEngine(
     private fun copyAssets() {
         copyAsset("silero_vad.onnx")
         copyAssetDir(SENSEVOICE_DIR)
-        copyAssetDir(WHISPER_BASE_DIR)
+        copyAssetDir(INDIC_CONFORMER_DIR)
         copyAssetDir("vits-piper-en_US-amy-low")
         copyAssetDir("vits-piper-hi_IN-pratham-medium")
     }
@@ -65,7 +82,7 @@ class SherpaOnnxEngine(
     private fun copyAsset(path: String) {
         val destFile = File(context.filesDir, path)
         if (destFile.exists()) return
-        
+
         destFile.parentFile?.mkdirs()
         try {
             context.assets.open(path).use { input ->
@@ -84,9 +101,8 @@ class SherpaOnnxEngine(
         } catch (e: Exception) {
             null
         } ?: return
-        
+
         if (assets.isEmpty()) {
-            // It's a file or empty directory
             copyAsset(path)
             return
         }
@@ -99,25 +115,25 @@ class SherpaOnnxEngine(
 
     /**
      * Build an OfflineRecognizer for the given language.
-     * - ENGLISH → SenseVoice (language hardcoded to "en", inverse text normalization enabled)
-     * - HINDI   → Whisper-base (language hardcoded to "hi", task = "transcribe")
-     *
-     * Must be called inside synchronized(engineLock).
+     * - ENGLISH: SenseVoice (int8, English, ITN enabled)
+     * - ALL INDIC LANGUAGES (hi, gu, mr, kn, ml, ta, te, or, bn):
+     *   AI4Bharat IndicConformer 120M INT8 CTC
      */
     private fun buildSttRecognizer(lang: AppLanguage): OfflineRecognizer? {
         val cores = Runtime.getRuntime().availableProcessors()
         val chosenThreads = cores.coerceIn(2, 4)
-        Log.i(TAG, "Detected CPU cores: $cores, STT numThreads set to: $chosenThreads")
+        Log.i(TAG, "Available CPU cores: $cores, STT threads: $chosenThreads")
 
         return when (lang) {
             AppLanguage.ENGLISH -> {
                 val modelFile = File(context.filesDir, "$SENSEVOICE_DIR/model.int8.onnx")
                 val tokensFile = File(context.filesDir, "$SENSEVOICE_DIR/tokens.txt")
                 if (!modelFile.exists() || !tokensFile.exists()) {
-                    Log.e(TAG, "SenseVoice model files missing: model=${modelFile.exists()}, tokens=${tokensFile.exists()}")
+                    Log.e(TAG, "SenseVoice files missing: model=${modelFile.exists()}, tokens=${tokensFile.exists()}")
                     return null
                 }
                 val config = OfflineRecognizerConfig(
+                    featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
                     modelConfig = OfflineModelConfig(
                         senseVoice = OfflineSenseVoiceModelConfig(
                             model = modelFile.absolutePath,
@@ -131,24 +147,23 @@ class SherpaOnnxEngine(
                     decodingMethod = "greedy_search"
                 )
                 val rec = OfflineRecognizer(config = config)
+                activeSttModelType = "sensevoice"
                 Log.i(TAG, "SenseVoice STT initialized (English, int8, $chosenThreads threads)")
                 rec
             }
-            AppLanguage.HINDI -> {
-                val encoderFile = File(context.filesDir, "$WHISPER_BASE_DIR/base-encoder.int8.onnx")
-                val decoderFile = File(context.filesDir, "$WHISPER_BASE_DIR/base-decoder.int8.onnx")
-                val tokensFile = File(context.filesDir, "$WHISPER_BASE_DIR/base-tokens.txt")
-                if (!encoderFile.exists() || !decoderFile.exists() || !tokensFile.exists()) {
-                    Log.e(TAG, "Whisper-base model files missing: encoder=${encoderFile.exists()}, decoder=${decoderFile.exists()}, tokens=${tokensFile.exists()}")
+            else -> {
+                // All 9 Indic languages share AI4Bharat IndicConformer 120M INT8 CTC
+                val modelFile = File(context.filesDir, "$INDIC_CONFORMER_DIR/model.int8.onnx")
+                val tokensFile = File(context.filesDir, "$INDIC_CONFORMER_DIR/tokens.txt")
+                if (!modelFile.exists() || !tokensFile.exists()) {
+                    Log.e(TAG, "IndicConformer files missing: model=${modelFile.exists()}, tokens=${tokensFile.exists()}")
                     return null
                 }
                 val config = OfflineRecognizerConfig(
+                    featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
                     modelConfig = OfflineModelConfig(
-                        whisper = OfflineWhisperModelConfig(
-                            encoder = encoderFile.absolutePath,
-                            decoder = decoderFile.absolutePath,
-                            language = "hi",
-                            task = "transcribe"
+                        nemo = OfflineNemoEncDecCtcModelConfig(
+                            model = modelFile.absolutePath
                         ),
                         tokens = tokensFile.absolutePath,
                         numThreads = chosenThreads,
@@ -157,45 +172,45 @@ class SherpaOnnxEngine(
                     decodingMethod = "greedy_search"
                 )
                 val rec = OfflineRecognizer(config = config)
-                Log.i(TAG, "Whisper-base STT initialized (Hindi, int8, $chosenThreads threads)")
+                activeSttModelType = "indicconformer"
+                Log.i(TAG, "AI4Bharat IndicConformer STT initialized for ${lang.label} (int8 CTC, $chosenThreads threads)")
                 rec
             }
         }
     }
 
     /**
-     * Rebuild TTS engine for the given language. Must be called inside synchronized(engineLock).
+     * Rebuild Piper TTS engine for English or Hindi.
+     * Uses shared Hindi espeak-ng-data to prevent voice conflict singleton bugs.
      */
-    private fun rebuildTTS(lang: AppLanguage) {
+    fun rebuildTTS(lang: AppLanguage) {
+        if (lang != AppLanguage.ENGLISH && lang != AppLanguage.HINDI) {
+            // Non-Piper languages are handled via Android native TTS
+            return
+        }
+
         try {
             ttsReady = false
             tts?.release()
             tts = null
 
-            // Use the Hindi model's espeak-ng-data as the shared dataDir for ALL TTS engines.
-            // espeak-ng is a C-level singleton; the Hindi espeak-ng-data is a superset that
-            // contains dictionaries for ALL languages (en_dict, hi_dict, etc.), so both
-            // English and Hindi phonemization work correctly without voice-switching conflicts.
             val sharedEspeakDataDir = File(context.filesDir,
                 "vits-piper-hi_IN-pratham-medium/espeak-ng-data").absolutePath
 
             val vitsConfig = when (lang) {
                 AppLanguage.ENGLISH -> OfflineTtsVitsModelConfig(
-                    model = File(context.filesDir,
-                        "vits-piper-en_US-amy-low/en_US-amy-low.onnx").absolutePath,
+                    model = File(context.filesDir, "vits-piper-en_US-amy-low/en_US-amy-low.onnx").absolutePath,
                     lexicon = "",
-                    tokens = File(context.filesDir,
-                        "vits-piper-en_US-amy-low/tokens.txt").absolutePath,
+                    tokens = File(context.filesDir, "vits-piper-en_US-amy-low/tokens.txt").absolutePath,
                     dataDir = sharedEspeakDataDir
                 )
                 AppLanguage.HINDI -> OfflineTtsVitsModelConfig(
-                    model = File(context.filesDir,
-                        "vits-piper-hi_IN-pratham-medium/hi_IN-pratham-medium.onnx").absolutePath,
+                    model = File(context.filesDir, "vits-piper-hi_IN-pratham-medium/hi_IN-pratham-medium.onnx").absolutePath,
                     lexicon = "",
-                    tokens = File(context.filesDir,
-                        "vits-piper-hi_IN-pratham-medium/tokens.txt").absolutePath,
+                    tokens = File(context.filesDir, "vits-piper-hi_IN-pratham-medium/tokens.txt").absolutePath,
                     dataDir = sharedEspeakDataDir
                 )
+                else -> return
             }
 
             tts = OfflineTts(
@@ -208,9 +223,9 @@ class SherpaOnnxEngine(
                 )
             )
             ttsReady = true
-            Log.i(TAG, "TTS initialized successfully for language: ${lang.name}")
+            Log.i(TAG, "Piper TTS initialized for: ${lang.name}")
         } catch (e: Exception) {
-            Log.e(TAG, "TTS rebuild failed for ${lang.name}: ${e.message}", e)
+            Log.e(TAG, "Piper TTS rebuild failed for ${lang.name}: ${e.message}", e)
             tts = null
             ttsReady = false
         }
@@ -218,33 +233,31 @@ class SherpaOnnxEngine(
 
     private fun initModels() {
         try {
-            // A) Copy assets
             copyAssets()
 
-            // B) Initialize VAD
+            // Initialize Silero VAD
+            val vadConfigFile = File(context.filesDir, "silero_vad.onnx")
             val vadConfig = VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(
-                    model = File(context.filesDir, "silero_vad.onnx").absolutePath,
+                    model = vadConfigFile.absolutePath,
                     threshold = 0.5f,
-                    minSilenceDuration = 0.3f,
-                    minSpeechDuration = 0.1f
+                    minSilenceDuration = 0.5f,
+                    minSpeechDuration = 0.15f
                 ),
                 sampleRate = 16000
             )
             vad = Vad(config = vadConfig)
 
-            // C) Initialize SenseVoice STT as default (English)
+            // Initialize STT (default English)
             synchronized(engineLock) {
                 recognizer = buildSttRecognizer(AppLanguage.ENGLISH)
                 sttReady = recognizer != null
                 if (sttReady) {
                     Log.i(TAG, "Default STT ready: SenseVoice (English)")
-                } else {
-                    Log.e(TAG, "Default STT failed to initialize")
                 }
             }
 
-            // D) Initialize default TTS (English Piper)
+            // Initialize Piper TTS (default English)
             synchronized(engineLock) {
                 rebuildTTS(AppLanguage.ENGLISH)
             }
@@ -253,16 +266,33 @@ class SherpaOnnxEngine(
         }
     }
 
+    // ── OPERATIONAL MODE & RECORDING ──────────────────────────────────────────
+
+    fun setOperationalMode(mode: OperationalMode) {
+        if (currentOperationalMode == mode) return
+        currentOperationalMode = mode
+        Log.i(TAG, "OperationalMode switched to: $mode")
+
+        if (mode == OperationalMode.PHONE_MODE) {
+            startContinuousPhoneMode()
+        } else {
+            stopContinuousPhoneMode()
+        }
+    }
+
+    fun getOperationalMode(): OperationalMode = currentOperationalMode
+
+    // ── 1. WALKIE-TALKIE (PTT) ────────────────────────────────────────────────
+
     fun startListening() {
-        // Guard: do not start if STT is switching or not loaded
+        if (currentOperationalMode == OperationalMode.PHONE_MODE) return
         if (isSttSwitching || !sttReady) {
-            Log.w(TAG, "STT not ready (switching=$isSttSwitching, ready=$sttReady), ignoring PTT press")
+            Log.w(TAG, "STT not ready (switching=$isSttSwitching, ready=$sttReady), ignoring PTT")
             return
         }
-
         if (isListening) return
         isListening = true
-        
+
         synchronized(audioBufferLock) {
             audioAccumulator.clear()
         }
@@ -275,15 +305,13 @@ class SherpaOnnxEngine(
                 audioFormat,
                 bufferSize
             )
-            
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord not initialized")
                 isListening = false
                 return
             }
-            
             audioRecord?.startRecording()
-            
+
             recordingJob = scope.launch {
                 val buffer = ShortArray(512)
                 while (isListening) {
@@ -304,9 +332,10 @@ class SherpaOnnxEngine(
     }
 
     fun stopListening() {
+        if (currentOperationalMode == OperationalMode.PHONE_MODE) return
         if (!isListening) return
         isListening = false
-        
+
         try {
             audioRecord?.stop()
             audioRecord?.release()
@@ -324,31 +353,145 @@ class SherpaOnnxEngine(
 
         if (finalAudio.isNotEmpty()) {
             val durationSec = finalAudio.size / 16000.0f
-            Log.i(TAG, "Decoding full PTT utterance: ${finalAudio.size} samples (${String.format("%.2f", durationSec)}s)")
-            
-            scope.launch {
-                val transcribed = synchronized(engineLock) {
-                    if (!sttReady) {
-                        Log.w(TAG, "STT not ready, skipping decode")
-                        null
-                    } else {
-                        decodeAudio(finalAudio)
+            Log.i(TAG, "Decoding PTT utterance: ${finalAudio.size} samples (${String.format("%.2f", durationSec)}s)")
+            decodeAndDispatch(finalAudio)
+        }
+    }
+
+    // ── 2. PHONE MODE (Continuous Auto-VAD Slicing) ───────────────────────────
+
+    private fun startContinuousPhoneMode() {
+        if (isContinuousPhoneModeActive) return
+        isContinuousPhoneModeActive = true
+
+        recordingJob = scope.launch {
+            try {
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize
+                )
+                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.e(TAG, "AudioRecord init failed for Phone Mode")
+                    isContinuousPhoneModeActive = false
+                    return@launch
+                }
+                audioRecord?.startRecording()
+
+                val buffer = ShortArray(512)
+                val utteranceBuffer = mutableListOf<Float>()
+                var speechActive = false
+                var lastSpeechTimestamp = 0L
+                val SILENCE_THRESHOLD_MS = 500L
+
+                Log.i(TAG, "Continuous Auto-VAD Phone Mode active")
+
+                while (isContinuousPhoneModeActive) {
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (read > 0) {
+                        val floatChunk = FloatArray(read)
+                        for (i in 0 until read) {
+                            floatChunk[i] = buffer[i].toFloat() / 32768.0f
+                        }
+
+                        val localVad = vad
+                        if (localVad != null) {
+                            localVad.acceptWaveform(floatChunk)
+                            val isSpeech = localVad.isSpeechDetected()
+
+                            if (isSpeech) {
+                                if (!speechActive) {
+                                    speechActive = true
+                                    onVadSpeechStateChanged?.invoke(true)
+                                }
+                                lastSpeechTimestamp = System.currentTimeMillis()
+                                for (sample in floatChunk) {
+                                    utteranceBuffer.add(sample)
+                                }
+                            } else if (speechActive) {
+                                // Still keep short pause samples in buffer to preserve natural end phonemes
+                                for (sample in floatChunk) {
+                                    utteranceBuffer.add(sample)
+                                }
+
+                                val silenceDuration = System.currentTimeMillis() - lastSpeechTimestamp
+                                if (silenceDuration > SILENCE_THRESHOLD_MS) {
+                                    // Speech segment completed
+                                    speechActive = false
+                                    onVadSpeechStateChanged?.invoke(false)
+
+                                    val audioSlice = utteranceBuffer.toFloatArray()
+                                    utteranceBuffer.clear()
+                                    localVad.clear()
+
+                                    // Filter noise bursts: minimum 0.25s
+                                    if (audioSlice.size >= 4000) {
+                                        Log.i(TAG, "Phone Mode detected utterance (${audioSlice.size} samples), decoding...")
+                                        launch(Dispatchers.IO) {
+                                            decodeAndDispatch(audioSlice)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                if (!transcribed.isNullOrBlank()) {
-                    val sanitized = sanitizeText(transcribed)
-                    if (sanitized.length >= 2) {
-                        onTextReady(sanitized)
-                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in Phone Mode audio loop", e)
+            } finally {
+                try {
+                    audioRecord?.stop()
+                    audioRecord?.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "AudioRecord cleanup warning: ${e.message}")
+                }
+                audioRecord = null
+                onVadSpeechStateChanged?.invoke(false)
+                Log.i(TAG, "Phone Mode recording stopped")
+            }
+        }
+    }
+
+    private fun stopContinuousPhoneMode() {
+        isContinuousPhoneModeActive = false
+        recordingJob?.cancel()
+        recordingJob = null
+        onVadSpeechStateChanged?.invoke(false)
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping AudioRecord: ${e.message}")
+        }
+        audioRecord = null
+    }
+
+    // ── DECODING & TEXT SANITIZATION ──────────────────────────────────────────
+
+    private fun decodeAndDispatch(audio: FloatArray) {
+        scope.launch {
+            val transcribed = synchronized(engineLock) {
+                if (!sttReady) {
+                    Log.w(TAG, "STT not ready, skipping decode")
+                    null
+                } else {
+                    decodeAudio(audio)
+                }
+            }
+            if (!transcribed.isNullOrBlank()) {
+                val sanitized = sanitizeText(transcribed)
+                if (sanitized.length >= 2) {
+                    // Convert phonetic Devanagari output to target language's native script
+                    val nativeScriptText = IndicScriptConverter.toTargetScript(sanitized, currentLanguage)
+                    Log.i(TAG, "STT Transliteration: \"$sanitized\" -> Native (${currentLanguage.label}): \"$nativeScriptText\"")
+                    onTextReady(nativeScriptText)
                 }
             }
         }
     }
 
-    /**
-     * Create a fresh stream, feed audio, decode, read result, release stream.
-     * Must be called inside synchronized(engineLock).
-     */
     private fun decodeAudio(audio: FloatArray): String? {
         val rec = recognizer ?: return null
         var stream: OfflineStream? = null
@@ -371,86 +514,124 @@ class SherpaOnnxEngine(
         }
     }
 
+    fun decodeAudioForBenchmark(audio: FloatArray): String? {
+        return synchronized(engineLock) {
+            decodeAudio(audio)
+        }
+    }
+
+    fun synthesizePiperWav(text: String): FloatArray? {
+        val playbackText = text.trim()
+        if (playbackText.isBlank()) return null
+        return synchronized(engineLock) {
+            try {
+                tts?.generate(text = playbackText, sid = 0, speed = 1.0f)?.samples
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
     fun switchLanguage(lang: AppLanguage) {
-        if (currentLanguage == lang && ttsReady && tts != null && sttReady && recognizer != null) return
+        if (currentLanguage == lang) return
+        val targetModelType = if (lang == AppLanguage.ENGLISH) "sensevoice" else "indicconformer"
+        val needsModelReload = activeSttModelType != targetModelType || recognizer == null
+
         currentLanguage = lang
 
-        // Mark both engines as switching
-        isTtsSwitching = true
-        ttsReady = false
+        if (!needsModelReload && (lang != AppLanguage.ENGLISH && lang != AppLanguage.HINDI)) {
+            // Indic-to-Indic switch requires 0 model reload!
+            Log.i(TAG, "Instant Indic switch to ${lang.label} (reusing active IndicConformer engine)")
+            return
+        }
+
         isSttSwitching = true
         sttReady = false
 
         scope.launch(Dispatchers.IO) {
             synchronized(engineLock) {
-                // --- Switch STT ---
                 try {
-                    Log.i(TAG, "Switching STT to ${lang.name}...")
-                    recognizer?.release()
-                    recognizer = null
-                    recognizer = buildSttRecognizer(lang)
-                    Log.i(TAG, "Successfully switched STT to: ${lang.name}")
+                    if (needsModelReload) {
+                        Log.i(TAG, "Switching STT engine to ${lang.name} ($targetModelType)...")
+                        recognizer?.release()
+                        recognizer = null
+                        recognizer = buildSttRecognizer(lang)
+                    }
+
+                    // Piper reload only if English or Hindi
+                    if (lang == AppLanguage.ENGLISH || lang == AppLanguage.HINDI) {
+                        rebuildTTS(lang)
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "STT switch failed for ${lang.name}: ${e.message}", e)
-                    recognizer = null
+                    Log.e(TAG, "Language switch failed for ${lang.name}: ${e.message}", e)
                 } finally {
                     sttReady = recognizer != null
                     isSttSwitching = false
-                    Log.i(TAG, "STT switch complete: sttReady=$sttReady")
-                }
-
-                // --- Switch TTS ---
-                try {
-                    rebuildTTS(lang)
-                    Log.i(TAG, "Successfully switched TTS voice to: ${lang.name}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "TTS switch failed for ${lang.name}", e)
-                } finally {
-                    isTtsSwitching = false
+                    Log.i(TAG, "Language switch complete: sttReady=$sttReady for ${lang.label}")
                 }
             }
         }
     }
 
     companion object {
-        fun detectScript(text: String): AppLanguage {
+        fun detectScript(text: String, preferredLang: AppLanguage = AppLanguage.ENGLISH): AppLanguage {
             for (ch in text) {
                 val code = ch.code
-                if (code in 0x0900..0x097F) return AppLanguage.HINDI  // Devanagari
+                when (code) {
+                    in 0x0980..0x09FF -> return AppLanguage.BENGALI
+                    in 0x0A80..0x0AFF -> return AppLanguage.GUJARATI
+                    in 0x0B00..0x0B7F -> return AppLanguage.ODIA
+                    in 0x0B80..0x0BFF -> return AppLanguage.TAMIL
+                    in 0x0C00..0x0C7F -> return AppLanguage.TELUGU
+                    in 0x0C80..0x0CFF -> return AppLanguage.KANNADA
+                    in 0x0D00..0x0D7F -> return AppLanguage.MALAYALAM
+                    in 0x0900..0x097F -> return if (preferredLang == AppLanguage.MARATHI) AppLanguage.MARATHI else AppLanguage.HINDI
+                }
             }
-            return AppLanguage.ENGLISH
+            return preferredLang
         }
     }
 
-    private fun sanitizeText(rawText: String): String {
-        return rawText
+    fun sanitizeText(rawText: String): String {
+        val withoutTags = rawText
             .replace(Regex("<\\|.*?\\|>"), "")
             .replace(Regex("\\[.*?\\]"), "")
             .replace(Regex("[\\x00-\\x1F\\x7F]"), "")
+
+        // Allowed Unicode blocks across all 10 languages:
+        // Basic Latin: \u0020-\u007E
+        // Devanagari: \u0900-\u097F (Hindi, Marathi)
+        // Bengali: \u0980-\u09FF
+        // Gujarati: \u0A80-\u0AFF
+        // Odia: \u0B00-\u0B7F
+        // Tamil: \u0B80-\u0BFF
+        // Telugu: \u0C00-\u0C7F
+        // Kannada: \u0C80-\u0CFF
+        // Malayalam: \u0D00-\u0D7F
+        val allowedRegex = Regex("[^\\u0020-\\u007E\\u0900-\\u097F\\u0980-\\u09FF\\u0A80-\\u0AFF\\u0B00-\\u0B7F\\u0B80-\\u0BFF\\u0C00-\\u0C7F\\u0C80-\\u0CFF\\u0D00-\\u0D7F]")
+
+        return withoutTags
+            .replace(allowedRegex, "")
             .replace(Regex("\\s+"), " ")
             .trim()
     }
 
-    fun synthesizeAndPlay(text: String) {
-        val isAlert = text.startsWith("[ALERT]")
-        val playbackText = if (isAlert) text.removePrefix("[ALERT]").trim() else text.trim()
-        if (playbackText.isBlank()) return
+    // ── PIPER TTS SYNTHESIS (Used by TtsManager for English & Hindi) ───────────
 
-        val detectedLang = detectScript(playbackText)
+    fun synthesizeAndPlayPiper(text: String, lang: AppLanguage, isAlert: Boolean) {
+        val playbackText = text.trim()
+        if (playbackText.isBlank()) return
 
         scope.launch(Dispatchers.IO) {
             try {
-                // Auto-switch voice to match script if needed
-                if (currentLanguage != detectedLang || !ttsReady || tts == null) {
-                    Log.d("TTS", "Auto-switched voice to $detectedLang for incoming text: \"$playbackText\"")
+                if (currentLanguage != lang || !ttsReady || tts == null) {
                     synchronized(engineLock) {
-                        currentLanguage = detectedLang
-                        rebuildTTS(detectedLang)
+                        rebuildTTS(lang)
                     }
                 }
 
                 val currentTts = synchronized(engineLock) { tts } ?: return@launch
-                
+
                 if (isAlert) {
                     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
@@ -467,8 +648,6 @@ class SherpaOnnxEngine(
 
                 if (audio != null && audio.samples.isNotEmpty()) {
                     val samples = audio.samples
-                    Log.d("TTS", "TTS generated ${samples.size} samples at ${audio.sampleRate} Hz for \"$playbackText\"")
-                    
                     val minBufSize = AudioTrack.getMinBufferSize(
                         audio.sampleRate,
                         AudioFormat.CHANNEL_OUT_MONO,
@@ -476,11 +655,13 @@ class SherpaOnnxEngine(
                     )
                     val bufferSizeInBytes = maxOf(minBufSize, samples.size * 4)
 
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setUsage(if (isAlert) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+
                     val track = AudioTrack.Builder()
-                        .setAudioAttributes(AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build())
+                        .setAudioAttributes(audioAttributes)
                         .setAudioFormat(AudioFormat.Builder()
                             .setSampleRate(audio.sampleRate)
                             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
@@ -489,15 +670,13 @@ class SherpaOnnxEngine(
                         .setBufferSizeInBytes(bufferSizeInBytes)
                         .setTransferMode(AudioTrack.MODE_STREAM)
                         .build()
-                    
+
                     if (track.state == AudioTrack.STATE_INITIALIZED) {
                         track.play()
                         val written = track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
                         if (written > 0) {
                             val durationMs = (samples.size.toFloat() / audio.sampleRate * 1000).toLong()
-                            delay(durationMs + 200)
-                        } else {
-                            Log.e(TAG, "AudioTrack write returned code: $written")
+                            delay(durationMs + 150)
                         }
                         try {
                             track.stop()
@@ -505,20 +684,17 @@ class SherpaOnnxEngine(
                             Log.w(TAG, "AudioTrack stop warning: ${e.message}")
                         }
                         track.release()
-                    } else {
-                        Log.e(TAG, "AudioTrack not initialized")
                     }
-                } else {
-                    Log.w(TAG, "TTS generate returned null or empty samples for text: \"$playbackText\"")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "TTS playback failed: ${e.message}", e)
+                Log.e(TAG, "Piper TTS playback failed: ${e.message}", e)
             }
         }
     }
 
     fun release() {
         stopListening()
+        stopContinuousPhoneMode()
         synchronized(engineLock) {
             recognizer?.release()
             recognizer = null

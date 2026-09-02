@@ -41,18 +41,21 @@ import com.example.itantra.ui.theme.*
 @Composable
 fun WalkieTalkieScreen(
     // ── State ────────────────────────────────────────────────────────────────
-    isListening        : Boolean,
-    isTransmitting     : Boolean,
-    p2pConnectionState : P2pState,
-    selectedLanguage   : AppLanguage,
-    transcriptList     : List<TranscriptMessage>,
-    isEmergencyAlert   : Boolean,
+    isListening          : Boolean,
+    isTransmitting       : Boolean,
+    p2pConnectionState   : P2pState,
+    selectedLanguage     : AppLanguage,
+    transcriptList       : List<TranscriptMessage>,
+    isEmergencyAlert     : Boolean,
+    operationalMode      : com.example.itantra.OperationalMode = com.example.itantra.OperationalMode.WALKIE_TALKIE,
+    isVadSpeaking        : Boolean = false,
     // ── Callbacks ────────────────────────────────────────────────────────────
-    onPushToTalkPressed : () -> Unit,
-    onPushToTalkReleased: () -> Unit,
-    onVoiceChange       : (AppLanguage) -> Unit,
-    onEmergencyToggle   : (Boolean) -> Unit,
-    modifier            : Modifier = Modifier
+    onPushToTalkPressed  : () -> Unit,
+    onPushToTalkReleased : () -> Unit,
+    onVoiceChange         : (AppLanguage) -> Unit,
+    onEmergencyToggle     : (Boolean) -> Unit,
+    onOperationalModeChange: (com.example.itantra.OperationalMode) -> Unit = {},
+    modifier              : Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val haptic    = LocalHapticFeedback.current
@@ -175,6 +178,14 @@ fun WalkieTalkieScreen(
                     )
                 }
 
+                // ── Operational Mode Toggle Card ─────────────────────────────
+                item {
+                    OperationalModeCard(
+                        currentMode  = operationalMode,
+                        onModeChange = onOperationalModeChange
+                    )
+                }
+
                 // ── Emergency Toggle Card (with Confirmation Guard) ───────────
                 item {
                     EmergencyToggleCard(
@@ -186,13 +197,18 @@ fun WalkieTalkieScreen(
                     )
                 }
 
-                // ── Section: PUSH TO TALK ─────────────────────────────────────
+                // ── Section: MODE CENTREPIECE ─────────────────────────────────
                 item {
                     Spacer(Modifier.height(4.dp))
-                    SectionHeader(label = "PUSH TO TALK")
+                    SectionHeader(
+                        label = if (operationalMode == com.example.itantra.OperationalMode.WALKIE_TALKIE)
+                            "PUSH TO TALK"
+                        else
+                            "PHONE MODE (AUTO-VAD)"
+                    )
                 }
 
-                // ── Centrepiece: Neural PTT Button (Full Duplex) ──────────────
+                // ── Centrepiece: Neural PTT Button OR Phone Mode Visualizer ───
                 item {
                     Box(
                         modifier         = Modifier
@@ -200,27 +216,35 @@ fun WalkieTalkieScreen(
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        NeuralPTTButton(
-                            isListening    = isListening,
-                            isTransmitting = isTransmitting,
-                            isEmergency    = isEmergencyAlert,
-                            modifier       = Modifier.pointerInteropFilter { event ->
-                                when (event.action) {
-                                    MotionEvent.ACTION_DOWN -> {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onPushToTalkPressed()
-                                        true
+                        if (operationalMode == com.example.itantra.OperationalMode.WALKIE_TALKIE) {
+                            NeuralPTTButton(
+                                isListening    = isListening,
+                                isTransmitting = isTransmitting,
+                                isEmergency    = isEmergencyAlert,
+                                modifier       = Modifier.pointerInteropFilter { event ->
+                                    when (event.action) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onPushToTalkPressed()
+                                            true
+                                        }
+                                        MotionEvent.ACTION_UP,
+                                        MotionEvent.ACTION_CANCEL -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            onPushToTalkReleased()
+                                            true
+                                        }
+                                        else -> false
                                     }
-                                    MotionEvent.ACTION_UP,
-                                    MotionEvent.ACTION_CANCEL -> {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        onPushToTalkReleased()
-                                        true
-                                    }
-                                    else -> false
                                 }
-                            }
-                        )
+                            )
+                        } else {
+                            PhoneModeVisualizer(
+                                isSpeechDetected = isVadSpeaking,
+                                isTransmitting   = isTransmitting,
+                                isEmergency      = isEmergencyAlert
+                            )
+                        }
                     }
                 }
 

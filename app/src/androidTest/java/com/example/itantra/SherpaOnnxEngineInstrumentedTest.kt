@@ -42,10 +42,14 @@ class SherpaOnnxEngineInstrumentedTest {
 
         val receivedText = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
-        val engine = SherpaOnnxEngine(context) { text ->
-            receivedText.set(text)
-            latch.countDown()
-        }
+        val engine = SherpaOnnxEngine(
+            context = context,
+            onTextReady = { text ->
+                receivedText.set(text)
+                latch.countDown()
+            },
+            onVadSpeechStateChanged = null
+        )
 
         try {
             // --- STT half: mic -> MicAudioCapture -> SileroVoiceActivityDetector -> SenseVoice recognizer ---
@@ -60,11 +64,11 @@ class SherpaOnnxEngineInstrumentedTest {
             )
 
             // --- TTS half: normal playback (mediaPlayer, USAGE_MEDIA) ---
-            engine.synthesizeAndPlay("This is a normal message.")
+            engine.synthesizeAndPlayPiper("This is a normal message.", AppLanguage.ENGLISH, false)
             runBlocking { delay(2_500) }
 
             // --- TTS half: alert playback (alertPlayer, USAGE_ALARM, boosted volume) ---
-            engine.synthesizeAndPlay("[ALERT]This is an emergency alert test.")
+            engine.synthesizeAndPlayPiper("This is an emergency alert test.", AppLanguage.ENGLISH, true)
             runBlocking { delay(2_500) }
         } finally {
             engine.release()

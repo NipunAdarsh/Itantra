@@ -2,6 +2,7 @@ package com.example.itantra
 
 import android.Manifest
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,16 +25,19 @@ class MainActivity : ComponentActivity() {
 
     // ── Engine & Networking ───────────────────────────────────────────────────
     private lateinit var sherpaEngine     : SherpaOnnxEngine
+    private lateinit var ttsManager       : TtsManager
     private lateinit var networkManager   : NetworkManager
     private lateinit var discoveryManager : DiscoveryManager
 
     // ── UI State ─────────────────────────────────────────────────────────────
-    private val transcriptState       = mutableStateListOf<TranscriptMessage>()
-    private val isListeningState      = mutableStateOf(false)
-    private val isTransmittingState   = mutableStateOf(false)
-    private val isEmergencyState      = mutableStateOf(false)
-    private val p2pState              = mutableStateOf<P2pState>(P2pState.Searching)
-    private val selectedLanguageState = mutableStateOf(AppLanguage.ENGLISH)
+    private val transcriptState        = mutableStateListOf<TranscriptMessage>()
+    private val isListeningState       = mutableStateOf(false)
+    private val isTransmittingState    = mutableStateOf(false)
+    private val isEmergencyState       = mutableStateOf(false)
+    private val p2pState               = mutableStateOf<P2pState>(P2pState.Searching)
+    private val selectedLanguageState  = mutableStateOf(AppLanguage.ENGLISH)
+    private val operationalModeState   = mutableStateOf(OperationalMode.WALKIE_TALKIE)
+    private val isVadSpeakingState     = mutableStateOf(false)
 
     private var messageIdCounter = 0L
     private fun nextId() = ++messageIdCounter
@@ -52,7 +56,7 @@ class MainActivity : ComponentActivity() {
         // ── Runtime Permissions Request (Audio + WiFi/Location for Discovery) ─
         val permissionsLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
-        ) { /* results handled; mic & discovery start gracefully */ }
+        ) { /* mic & discovery start gracefully */ }
         permissionsLauncher.launch(
             arrayOf(
                 Manifest.permission.RECORD_AUDIO,
@@ -61,22 +65,56 @@ class MainActivity : ComponentActivity() {
             )
         )
 
+        // ── Hybrid TTS Manager (Piper for EN/HI + Android Native for 8 Indic) ─
+        ttsManager = TtsManager(
+            context = this,
+            onVoiceUnavailable = { lang ->
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Offline voice for ${lang.label} missing. Spoken via fallback.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            speakPiper = { text, lang, isAlert ->
+                sherpaEngine.synthesizeAndPlayPiper(text, lang, isAlert)
+            }
+        )
+
         // ── Full Duplex Network Manager ──────────────────────────────────────
-        networkManager = NetworkManager { receivedText ->
+        networkManager = NetworkManager { rawReceivedText ->
             runOnUiThread {
+                var cleanText = rawReceivedText
+                var targetLang = selectedLanguageState.value
+
+                // 1. Extract [LANG:xx] protocol header if present
+                val langMatch = Regex("^\\[LANG:([a-z]{2})\\]").find(cleanText)
+                if (langMatch != null) {
+                    val code = langMatch.groupValues[1]
+                    AppLanguage.values().find { it.code == code }?.let {
+                        targetLang = it
+                    }
+                    cleanText = cleanText.removeRange(langMatch.range)
+                } else {
+                    targetLang = SherpaOnnxEngine.detectScript(cleanText, selectedLanguageState.value)
+                }
+
+                val isEmergency = cleanText.startsWith("[ALERT]")
+
                 transcriptState.add(
                     0,
                     TranscriptMessage(
                         id          = nextId(),
-                        text        = receivedText,
+                        text        = cleanText,
                         direction   = TranscriptMessage.Direction.RECEIVED,
-                        isEmergency = receivedText.startsWith("[ALERT]"),
+                        isEmergency = isEmergency,
                         timestamp   = currentTimestamp()
                     )
                 )
-                // Play received audio on both devices when not holding mic
+                // Play received audio on peer device when not holding mic in PTT mode
                 if (!isListeningState.value) {
-                    sherpaEngine.synthesizeAndPlay(receivedText)
+                    ttsManager.speak(cleanText, targetLang)
                 }
             }
         }
@@ -90,27 +128,36 @@ class MainActivity : ComponentActivity() {
         }
 
         // ── Neural Voice Engine (STT -> Network Send -> TTS) ─────────────────
-        sherpaEngine = SherpaOnnxEngine(this) { sttText ->
-            runOnUiThread {
-                val finalMessage = if (isEmergencyState.value) "[ALERT]$sttText" else sttText
-                transcriptState.add(
-                    0,
-                    TranscriptMessage(
-                        id          = nextId(),
-                        text        = finalMessage,
-                        direction   = TranscriptMessage.Direction.SENT,
-                        isEmergency = isEmergencyState.value,
-                        timestamp   = currentTimestamp()
+        sherpaEngine = SherpaOnnxEngine(
+            context = this,
+            onTextReady = { sttText ->
+                runOnUiThread {
+                    val finalMessage = if (isEmergencyState.value) "[ALERT]$sttText" else sttText
+                    transcriptState.add(
+                        0,
+                        TranscriptMessage(
+                            id          = nextId(),
+                            text        = finalMessage,
+                            direction   = TranscriptMessage.Direction.SENT,
+                            isEmergency = isEmergencyState.value,
+                            timestamp   = currentTimestamp()
+                        )
                     )
-                )
-                lifecycleScope.launch {
-                    isTransmittingState.value = true
-                    networkManager.sendText(finalMessage)
-                    delay(500) // Visual feedback duration
-                    isTransmittingState.value = false
+                    lifecycleScope.launch {
+                        isTransmittingState.value = true
+                        val networkPayload = "[LANG:${selectedLanguageState.value.code}]$finalMessage"
+                        networkManager.sendText(networkPayload)
+                        delay(500) // Visual feedback duration
+                        isTransmittingState.value = false
+                    }
+                }
+            },
+            onVadSpeechStateChanged = { isSpeaking ->
+                runOnUiThread {
+                    isVadSpeakingState.value = isSpeaking
                 }
             }
-        }
+        )
 
         // ── Compose UI ───────────────────────────────────────────────────────
         setContent {
@@ -124,28 +171,36 @@ class MainActivity : ComponentActivity() {
                     val isEmergency      by isEmergencyState
                     val p2pConnection    by p2pState
                     val selectedLanguage by selectedLanguageState
+                    val currentMode      by operationalModeState
+                    val isVadSpeaking    by isVadSpeakingState
 
                     WalkieTalkieScreen(
-                        isListening          = isListening,
-                        isTransmitting       = isTransmitting,
-                        p2pConnectionState   = p2pConnection,
-                        selectedLanguage     = selectedLanguage,
-                        transcriptList       = transcriptState,
-                        isEmergencyAlert     = isEmergency,
-                        onPushToTalkPressed  = {
+                        isListening             = isListening,
+                        isTransmitting          = isTransmitting,
+                        p2pConnectionState      = p2pConnection,
+                        selectedLanguage        = selectedLanguage,
+                        transcriptList          = transcriptState,
+                        isEmergencyAlert        = isEmergency,
+                        operationalMode         = currentMode,
+                        isVadSpeaking           = isVadSpeaking,
+                        onPushToTalkPressed     = {
                             isListeningState.value = true
                             sherpaEngine.startListening()
                         },
-                        onPushToTalkReleased = {
+                        onPushToTalkReleased    = {
                             isListeningState.value = false
                             sherpaEngine.stopListening()
                         },
-                        onVoiceChange        = { lang ->
+                        onVoiceChange           = { lang ->
                             selectedLanguageState.value = lang
                             sherpaEngine.switchLanguage(lang)
                         },
-                        onEmergencyToggle    = { enabled ->
+                        onEmergencyToggle       = { enabled ->
                             isEmergencyState.value = enabled
+                        },
+                        onOperationalModeChange = { newMode ->
+                            operationalModeState.value = newMode
+                            sherpaEngine.setOperationalMode(newMode)
                         }
                     )
                 }
@@ -162,6 +217,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         discoveryManager.stop()
         networkManager.stop()
+        ttsManager.release()
         sherpaEngine.release()
     }
 }

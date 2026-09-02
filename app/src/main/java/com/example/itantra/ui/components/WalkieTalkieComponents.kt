@@ -823,3 +823,195 @@ fun EmptyTranscriptState(modifier: Modifier = Modifier) {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10 ─ OperationalModeCard
+//      Tactical segmented toggle between Walkie-Talkie (PTT) and Auto-VAD Phone Mode.
+// ═══════════════════════════════════════════════════════════════════════════════
+@Composable
+fun OperationalModeCard(
+    currentMode: com.example.itantra.OperationalMode,
+    onModeChange: (com.example.itantra.OperationalMode) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = SurfaceContainerLow,
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, CardBorder),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "OPERATIONAL MODE",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = OnSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceContainerHigh)
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Walkie Talkie Option
+                val isPtt = currentMode == com.example.itantra.OperationalMode.WALKIE_TALKIE
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isPtt) Primary else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onModeChange(com.example.itantra.OperationalMode.WALKIE_TALKIE) }
+                ) {
+                    Box(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "📻 PTT Mode",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isPtt) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isPtt) OnPrimary else OnSurfaceVariant
+                            )
+                        )
+                    }
+                }
+
+                // Phone Mode Option
+                val isPhone = currentMode == com.example.itantra.OperationalMode.PHONE_MODE
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isPhone) Primary else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onModeChange(com.example.itantra.OperationalMode.PHONE_MODE) }
+                ) {
+                    Box(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "📞 Phone Mode",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isPhone) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isPhone) OnPrimary else OnSurfaceVariant
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 11 ─ PhoneModeVisualizer
+//      Hands-free continuous listening visualizer with live VAD pulse state.
+// ═══════════════════════════════════════════════════════════════════════════════
+@Composable
+fun PhoneModeVisualizer(
+    isSpeechDetected: Boolean,
+    isTransmitting: Boolean,
+    isEmergency: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "phone_mode_vad")
+
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isSpeechDetected) 1.22f else 1.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isSpeechDetected) 450 else 1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "phone_pulse"
+    )
+
+    val waveAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 0.1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isSpeechDetected) 600 else 1800),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "phone_wave_alpha"
+    )
+
+    val activeColor = when {
+        isEmergency -> AlertRed
+        isSpeechDetected -> Primary
+        else -> Primary.copy(alpha = 0.6f)
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Box(
+            modifier = Modifier.size(220.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            // Ambient outer glow
+            Box(
+                modifier = Modifier
+                    .size(200.dp)
+                    .scale(pulseScale)
+                    .clip(CircleShape)
+                    .background(activeColor.copy(alpha = waveAlpha * 0.35f))
+                    .blur(16.dp)
+            )
+
+            // Inner circle
+            Box(
+                modifier = Modifier
+                    .size(140.dp)
+                    .clip(CircleShape)
+                    .background(SurfaceContainerHigh)
+                    .border(2.dp, activeColor, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = when {
+                            isTransmitting -> "🚀"
+                            isSpeechDetected -> "🎙️"
+                            else -> "👂"
+                        },
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+                    Text(
+                        text = when {
+                            isTransmitting -> "Transmitting"
+                            isSpeechDetected -> "Speech Detected"
+                            else -> "Listening..."
+                        },
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSpeechDetected) activeColor else OnSurface
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = if (isSpeechDetected) "Speech active • Transcribing..." else "Hands-free continuous listening active",
+            style = MaterialTheme.typography.bodySmall.copy(color = OnSurfaceVariant)
+        )
+        Text(
+            text = "Pause for 500ms to automatically transmit",
+            style = MaterialTheme.typography.labelSmall.copy(color = OnSurfaceVariant.copy(alpha = 0.6f))
+        )
+    }
+}
+

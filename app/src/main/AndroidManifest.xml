@@ -32,6 +32,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".BenchmarkActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ITantra" />
     </application>
 
 </manifest>
