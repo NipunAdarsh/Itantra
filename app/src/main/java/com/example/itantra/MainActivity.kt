@@ -1,6 +1,7 @@
 package com.example.itantra
 
 import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -13,7 +14,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import com.example.itantra.ui.BluetoothPeerUi
 import com.example.itantra.ui.P2pState
+import com.example.itantra.ui.TransportType
 import com.example.itantra.ui.TranscriptMessage
 import com.example.itantra.ui.WalkieTalkieScreen
 import com.example.itantra.ui.theme.ITantraTheme
@@ -28,6 +31,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var ttsManager       : TtsManager
     private lateinit var networkManager   : NetworkManager
     private lateinit var discoveryManager : DiscoveryManager
+    private lateinit var bluetoothManager : BluetoothTransportManager
 
     // ── UI State ─────────────────────────────────────────────────────────────
     private val transcriptState        = mutableStateListOf<TranscriptMessage>()
@@ -38,6 +42,11 @@ class MainActivity : ComponentActivity() {
     private val selectedLanguageState  = mutableStateOf(AppLanguage.ENGLISH)
     private val operationalModeState   = mutableStateOf(OperationalMode.WALKIE_TALKIE)
     private val isVadSpeakingState     = mutableStateOf(false)
+    private val transportTypeState     = mutableStateOf(TransportType.WIFI)
+    private val bluetoothPeerLabelState = mutableStateOf<String?>(null)
+    private val pairedBtDevicesState    = mutableStateListOf<BluetoothPeerUi>()
+    private val discoveredBtDevicesState = mutableStateListOf<BluetoothPeerUi>()
+    private val isScanningBtState        = mutableStateOf(false)
 
     private var messageIdCounter = 0L
     private fun nextId() = ++messageIdCounter
@@ -50,6 +59,41 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /** Shared inbound-message handling for both the Wi-Fi and Bluetooth transports. */
+    private fun handleIncomingText(rawReceivedText: String) {
+        var cleanText = rawReceivedText
+        var targetLang = selectedLanguageState.value
+
+        // 1. Extract [LANG:xx] protocol header if present
+        val langMatch = Regex("^\\[LANG:([a-z]{2})\\]").find(cleanText)
+        if (langMatch != null) {
+            val code = langMatch.groupValues[1]
+            AppLanguage.values().find { it.code == code }?.let {
+                targetLang = it
+            }
+            cleanText = cleanText.removeRange(langMatch.range)
+        } else {
+            targetLang = SherpaOnnxEngine.detectScript(cleanText, selectedLanguageState.value)
+        }
+
+        val isEmergency = cleanText.startsWith("[ALERT]")
+
+        transcriptState.add(
+            0,
+            TranscriptMessage(
+                id          = nextId(),
+                text        = cleanText,
+                direction   = TranscriptMessage.Direction.RECEIVED,
+                isEmergency = isEmergency,
+                timestamp   = currentTimestamp()
+            )
+        )
+        // Play received audio on peer device when not holding mic in PTT mode
+        if (!isListeningState.value) {
+            ttsManager.speak(cleanText, targetLang)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -57,13 +101,16 @@ class MainActivity : ComponentActivity() {
         val permissionsLauncher = registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { /* mic & discovery start gracefully */ }
-        permissionsLauncher.launch(
-            arrayOf(
-                Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
+        val runtimePermissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runtimePermissions += Manifest.permission.BLUETOOTH_CONNECT
+            runtimePermissions += Manifest.permission.BLUETOOTH_SCAN
+        }
+        permissionsLauncher.launch(runtimePermissions.toTypedArray())
 
         // ── Hybrid TTS Manager (Piper for EN/HI + Android Native for 8 Indic) ─
         ttsManager = TtsManager(
@@ -82,50 +129,50 @@ class MainActivity : ComponentActivity() {
             }
         )
 
-        // ── Full Duplex Network Manager ──────────────────────────────────────
+        // ── Full Duplex Network Manager (Wi-Fi transport) ────────────────────
         networkManager = NetworkManager { rawReceivedText ->
-            runOnUiThread {
-                var cleanText = rawReceivedText
-                var targetLang = selectedLanguageState.value
-
-                // 1. Extract [LANG:xx] protocol header if present
-                val langMatch = Regex("^\\[LANG:([a-z]{2})\\]").find(cleanText)
-                if (langMatch != null) {
-                    val code = langMatch.groupValues[1]
-                    AppLanguage.values().find { it.code == code }?.let {
-                        targetLang = it
-                    }
-                    cleanText = cleanText.removeRange(langMatch.range)
-                } else {
-                    targetLang = SherpaOnnxEngine.detectScript(cleanText, selectedLanguageState.value)
-                }
-
-                val isEmergency = cleanText.startsWith("[ALERT]")
-
-                transcriptState.add(
-                    0,
-                    TranscriptMessage(
-                        id          = nextId(),
-                        text        = cleanText,
-                        direction   = TranscriptMessage.Direction.RECEIVED,
-                        isEmergency = isEmergency,
-                        timestamp   = currentTimestamp()
-                    )
-                )
-                // Play received audio on peer device when not holding mic in PTT mode
-                if (!isListeningState.value) {
-                    ttsManager.speak(cleanText, targetLang)
-                }
-            }
+            runOnUiThread { handleIncomingText(rawReceivedText) }
         }
 
         // ── UDP Broadcast Auto-Discovery Manager ──────────────────────────────
         discoveryManager = DiscoveryManager(this) { peerIp ->
             runOnUiThread {
-                p2pState.value = P2pState.Connected(peerIp)
                 networkManager.setPeerIp(peerIp)
+                if (transportTypeState.value == TransportType.WIFI) {
+                    p2pState.value = P2pState.Connected(peerIp)
+                }
             }
         }
+
+        // ── Bluetooth Classic (RFCOMM) Transport — offline fallback link ──────
+        bluetoothManager = BluetoothTransportManager(
+            context = this,
+            onTextReceived = { rawReceivedText ->
+                runOnUiThread { handleIncomingText(rawReceivedText) }
+            },
+            onConnectionStateChanged = { connected, peerLabel ->
+                runOnUiThread {
+                    bluetoothPeerLabelState.value = if (connected) peerLabel else null
+                    if (transportTypeState.value == TransportType.BLUETOOTH) {
+                        p2pState.value = if (connected)
+                            P2pState.Connected(peerLabel ?: "peer")
+                        else
+                            P2pState.Disconnected
+                    }
+                }
+            },
+            onDeviceDiscovered = { peer ->
+                runOnUiThread {
+                    val ui = BluetoothPeerUi(peer.name, peer.address, peer.isPaired)
+                    if (discoveredBtDevicesState.none { it.address == ui.address }) {
+                        discoveredBtDevicesState.add(ui)
+                    }
+                }
+            },
+            onDiscoveryFinished = {
+                runOnUiThread { isScanningBtState.value = false }
+            }
+        )
 
         // ── Neural Voice Engine (STT -> Network Send -> TTS) ─────────────────
         sherpaEngine = SherpaOnnxEngine(
@@ -146,7 +193,10 @@ class MainActivity : ComponentActivity() {
                     lifecycleScope.launch {
                         isTransmittingState.value = true
                         val networkPayload = "[LANG:${selectedLanguageState.value.code}]$finalMessage"
-                        networkManager.sendText(networkPayload)
+                        when (transportTypeState.value) {
+                            TransportType.WIFI      -> networkManager.sendText(networkPayload)
+                            TransportType.BLUETOOTH -> bluetoothManager.sendText(networkPayload)
+                        }
                         delay(500) // Visual feedback duration
                         isTransmittingState.value = false
                     }
@@ -173,6 +223,9 @@ class MainActivity : ComponentActivity() {
                     val selectedLanguage by selectedLanguageState
                     val currentMode      by operationalModeState
                     val isVadSpeaking    by isVadSpeakingState
+                    val currentTransport by transportTypeState
+                    val btPeerLabel      by bluetoothPeerLabelState
+                    val isScanningBt     by isScanningBtState
 
                     WalkieTalkieScreen(
                         isListening             = isListening,
@@ -183,6 +236,42 @@ class MainActivity : ComponentActivity() {
                         isEmergencyAlert        = isEmergency,
                         operationalMode         = currentMode,
                         isVadSpeaking           = isVadSpeaking,
+                        transportType           = currentTransport,
+                        bluetoothPeerLabel      = btPeerLabel,
+                        pairedBluetoothDevices  = pairedBtDevicesState,
+                        discoveredBluetoothDevices = discoveredBtDevicesState,
+                        isScanningBluetooth     = isScanningBt,
+                        onTransportChange       = { newTransport ->
+                            transportTypeState.value = newTransport
+                            when (newTransport) {
+                                TransportType.WIFI -> {
+                                    p2pState.value = networkManager.getPeerIp()
+                                        ?.let { P2pState.Connected(it) }
+                                        ?: P2pState.Searching
+                                }
+                                TransportType.BLUETOOTH -> {
+                                    bluetoothManager.start()
+                                    p2pState.value = bluetoothPeerLabelState.value
+                                        ?.let { P2pState.Connected(it) }
+                                        ?: P2pState.Disconnected
+                                }
+                            }
+                        },
+                        onScanBluetoothDevices  = {
+                            discoveredBtDevicesState.clear()
+                            pairedBtDevicesState.clear()
+                            pairedBtDevicesState.addAll(
+                                bluetoothManager.pairedDevices()
+                                    .map { BluetoothPeerUi(it.name, it.address, it.isPaired) }
+                            )
+                            isScanningBtState.value = true
+                            bluetoothManager.startDiscovery()
+                        },
+                        onBluetoothDeviceSelected = { device ->
+                            bluetoothManager.stopDiscovery()
+                            isScanningBtState.value = false
+                            bluetoothManager.connectToDevice(device.address)
+                        },
                         onPushToTalkPressed     = {
                             isListeningState.value = true
                             sherpaEngine.startListening()
@@ -217,6 +306,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         discoveryManager.stop()
         networkManager.stop()
+        bluetoothManager.stop()
         ttsManager.release()
         sherpaEngine.release()
     }

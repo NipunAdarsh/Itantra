@@ -15,6 +15,17 @@ sealed class P2pState {
     object Disconnected : P2pState()
 }
 
+/** Which link layer is currently carrying transmissions */
+enum class TransportType { WIFI, BLUETOOTH }
+
+/** A Bluetooth peer surfaced to the device picker (paired or freshly discovered) */
+@Stable
+data class BluetoothPeerUi(
+    val name    : String,
+    val address : String,
+    val isPaired: Boolean
+)
+
 /** A single entry in the live transcript feed */
 @Stable
 data class TranscriptMessage(

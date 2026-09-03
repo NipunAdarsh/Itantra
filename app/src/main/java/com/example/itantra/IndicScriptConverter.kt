@@ -6,20 +6,23 @@ object IndicScriptConverter {
     private const val TAG = "IndicScriptConverter"
 
     /**
-     * Converts phonetic Devanagari text (output by multilingual IndicConformer CTC)
-     * to the target language's native Brahmic Unicode script.
+     * Converts phonetic Devanagari text (output by the shared multilingual IndicConformer
+     * CTC fallback) to the target language's native Brahmic Unicode script.
+     *
+     * Kannada, Telugu and Tamil are excluded: they run on dedicated per-language
+     * IndicConformer checkpoints (see SherpaOnnxEngine.DEDICATED_INDIC_MODEL_DIRS) that
+     * emit native-script tokens directly, so remapping here would be a no-op at best and
+     * a corruption risk at worst if applied to already-correct text.
      */
     fun toTargetScript(text: String, targetLang: AppLanguage): String {
         if (text.isBlank()) return text
 
         return when (targetLang) {
-            AppLanguage.ENGLISH, AppLanguage.HINDI, AppLanguage.MARATHI -> text
+            AppLanguage.ENGLISH, AppLanguage.HINDI, AppLanguage.MARATHI,
+            AppLanguage.KANNADA, AppLanguage.TELUGU, AppLanguage.TAMIL -> text
             AppLanguage.BENGALI -> convertBlock(text, 0x0080)
             AppLanguage.GUJARATI -> convertBlock(text, 0x0180)
             AppLanguage.ODIA -> convertBlock(text, 0x0200)
-            AppLanguage.TAMIL -> convertToTamil(text)
-            AppLanguage.TELUGU -> convertBlock(text, 0x0300)
-            AppLanguage.KANNADA -> convertBlock(text, 0x0380)
             AppLanguage.MALAYALAM -> convertBlock(text, 0x0400)
         }
     }
@@ -34,34 +37,6 @@ object IndicScriptConverter {
             val code = text[i].code
             if (code in 0x0900..0x097F) {
                 sb.append((code + offset).toChar())
-            } else {
-                sb.append(text[i])
-            }
-        }
-        return sb.toString()
-    }
-
-    /**
-     * Tamil has a reduced consonant inventory in Unicode (unassigned aspirated and voiced stops).
-     * We map unassigned code points to their corresponding base voiceless stops before shifting.
-     */
-    private fun convertToTamil(text: String): String {
-        val sb = StringBuilder(text.length)
-        for (i in 0 until text.length) {
-            var code = text[i].code
-            if (code in 0x0900..0x097F) {
-                // Map Devanagari consonants that don't exist in Tamil to their base Tamil equivalents
-                code = when (code) {
-                    0x0916, 0x0917, 0x0918 -> 0x0915 // kh, g, gh -> k (க)
-                    0x091B, 0x091D -> 0x091A       // ch, jh -> c (ச)
-                    0x0920, 0x0921, 0x0922 -> 0x091F // th, d, dh (retroflex) -> t (ட)
-                    0x0925, 0x0926, 0x0927 -> 0x0924 // th, d, dh (dental) -> t (த)
-                    0x092B, 0x092C, 0x092D -> 0x092A // ph, b, bh -> p (ப)
-                    0x0936 -> 0x0938               // sh -> s (ஸ)
-                    0x0937 -> 0x0937               // ss -> ss (ஷ)
-                    else -> code
-                }
-                sb.append((code + 0x0280).toChar())
             } else {
                 sb.append(text[i])
             }

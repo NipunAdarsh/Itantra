@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -23,7 +25,9 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.itantra.ui.BluetoothPeerUi
 import com.example.itantra.ui.P2pState
+import com.example.itantra.ui.TransportType
 import com.example.itantra.ui.TranscriptMessage
 import com.example.itantra.ui.theme.*
 
@@ -1013,5 +1017,180 @@ fun PhoneModeVisualizer(
             style = MaterialTheme.typography.labelSmall.copy(color = OnSurfaceVariant.copy(alpha = 0.6f))
         )
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12 ─ TransportModeCard
+//      Segmented toggle between Wi-Fi (auto-discovery) and Bluetooth (paired /
+//      scanned RFCOMM peer). Bluetooth shows the connected peer or a picker CTA.
+// ═══════════════════════════════════════════════════════════════════════════════
+@Composable
+fun TransportModeCard(
+    currentTransport   : TransportType,
+    bluetoothPeerLabel : String?,
+    onTransportChange  : (TransportType) -> Unit,
+    onPickBluetoothDevice: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = SurfaceContainerLow,
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, CardBorder),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "TRANSPORT LINK",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = OnSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceContainerHigh)
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                val isWifi = currentTransport == TransportType.WIFI
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isWifi) Primary else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onTransportChange(TransportType.WIFI) }
+                ) {
+                    Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "📶 Wi-Fi",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isWifi) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isWifi) OnPrimary else OnSurfaceVariant
+                            )
+                        )
+                    }
+                }
+
+                val isBt = currentTransport == TransportType.BLUETOOTH
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isBt) Primary else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onTransportChange(TransportType.BLUETOOTH) }
+                ) {
+                    Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "🔵 Bluetooth",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isBt) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isBt) OnPrimary else OnSurfaceVariant
+                            )
+                        )
+                    }
+                }
+            }
+
+            if (currentTransport == TransportType.BLUETOOTH) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = SurfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPickBluetoothDevice() }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = bluetoothPeerLabel?.let { "Paired to $it" } ?: "Select Bluetooth device…",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = if (bluetoothPeerLabel != null) Primary else OnSurfaceVariant
+                            )
+                        )
+                        Text("›", style = MaterialTheme.typography.titleMedium.copy(color = OnSurfaceVariant))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 13 ─ BluetoothDevicePickerDialog
+//      Lists paired + discovered devices; a Scan action re-triggers discovery.
+// ═══════════════════════════════════════════════════════════════════════════════
+@Composable
+fun BluetoothDevicePickerDialog(
+    pairedDevices    : List<BluetoothPeerUi>,
+    discoveredDevices: List<BluetoothPeerUi>,
+    isScanning       : Boolean,
+    onScan           : () -> Unit,
+    onDeviceSelected : (BluetoothPeerUi) -> Unit,
+    onDismiss        : () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor    = SurfaceContainer,
+        titleContentColor = OnSurface,
+        title = { Text("Select Bluetooth peer", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)) },
+        text = {
+            Column(modifier = Modifier.heightIn(max = 360.dp)) {
+                val allDevices = (pairedDevices + discoveredDevices).distinctBy { it.address }
+                if (allDevices.isEmpty()) {
+                    Text(
+                        text = if (isScanning) "Scanning nearby devices…" else "No devices found. Pair a device in system Bluetooth settings, or scan.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = OnSurfaceVariant)
+                    )
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(allDevices, key = { it.address }) { device ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = SurfaceContainerHigh,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onDeviceSelected(device) }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                        .fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(device.name, style = MaterialTheme.typography.bodyMedium.copy(color = OnSurface))
+                                        Text(device.address, style = MaterialTheme.typography.labelSmall.copy(color = OnSurfaceVariant))
+                                    }
+                                    if (device.isPaired) {
+                                        Text("Paired", style = MaterialTheme.typography.labelSmall.copy(color = Primary))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onScan) {
+                Text(if (isScanning) "Scanning…" else "Scan", color = Primary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close", color = OnSurfaceVariant) }
+        }
+    )
 }
 

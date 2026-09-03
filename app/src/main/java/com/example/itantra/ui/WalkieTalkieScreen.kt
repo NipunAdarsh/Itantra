@@ -49,14 +49,23 @@ fun WalkieTalkieScreen(
     isEmergencyAlert     : Boolean,
     operationalMode      : com.example.itantra.OperationalMode = com.example.itantra.OperationalMode.WALKIE_TALKIE,
     isVadSpeaking        : Boolean = false,
+    transportType         : TransportType = TransportType.WIFI,
+    bluetoothPeerLabel    : String? = null,
+    pairedBluetoothDevices: List<BluetoothPeerUi> = emptyList(),
+    discoveredBluetoothDevices: List<BluetoothPeerUi> = emptyList(),
+    isScanningBluetooth   : Boolean = false,
     // ── Callbacks ────────────────────────────────────────────────────────────
     onPushToTalkPressed  : () -> Unit,
     onPushToTalkReleased : () -> Unit,
     onVoiceChange         : (AppLanguage) -> Unit,
     onEmergencyToggle     : (Boolean) -> Unit,
     onOperationalModeChange: (com.example.itantra.OperationalMode) -> Unit = {},
+    onTransportChange      : (TransportType) -> Unit = {},
+    onScanBluetoothDevices : () -> Unit = {},
+    onBluetoothDeviceSelected: (BluetoothPeerUi) -> Unit = {},
     modifier              : Modifier = Modifier
 ) {
+    var showBtPicker by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val haptic    = LocalHapticFeedback.current
 
@@ -123,6 +132,20 @@ fun WalkieTalkieScreen(
         )
     }
 
+    if (showBtPicker) {
+        BluetoothDevicePickerDialog(
+            pairedDevices     = pairedBluetoothDevices,
+            discoveredDevices = discoveredBluetoothDevices,
+            isScanning        = isScanningBluetooth,
+            onScan            = onScanBluetoothDevices,
+            onDeviceSelected  = { device ->
+                onBluetoothDeviceSelected(device)
+                showBtPicker = false
+            },
+            onDismiss = { showBtPicker = false }
+        )
+    }
+
     // ── Main Screen Container ─────────────────────────────────────────────────
     Box(
         modifier = modifier
@@ -183,6 +206,19 @@ fun WalkieTalkieScreen(
                     OperationalModeCard(
                         currentMode  = operationalMode,
                         onModeChange = onOperationalModeChange
+                    )
+                }
+
+                // ── Transport Link Toggle Card (Wi-Fi / Bluetooth) ────────────
+                item {
+                    TransportModeCard(
+                        currentTransport      = transportType,
+                        bluetoothPeerLabel     = bluetoothPeerLabel,
+                        onTransportChange      = onTransportChange,
+                        onPickBluetoothDevice  = {
+                            showBtPicker = true
+                            onScanBluetoothDevices()
+                        }
                     )
                 }
 

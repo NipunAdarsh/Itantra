@@ -37,7 +37,44 @@ class SherpaOnnxEngine(
 ) {
     private val TAG = "SherpaOnnxEngine"
     private val SENSEVOICE_DIR = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+
+    /** Shared fallback IndicConformer (Devanagari-biased) used for languages without a dedicated checkpoint. */
     private val INDIC_CONFORMER_DIR = "indic-conformer-onnx-sherpa"
+
+    /**
+     * Dedicated per-language IndicConformer checkpoints (AI4Bharat monolingual CTC exports).
+     * Unlike the shared [INDIC_CONFORMER_DIR] model, each of these was trained on a single
+     * language and emits native-script tokens directly with no cross-language bleed — see
+     * IndicScriptConverter's pass-through for these languages.
+     */
+    private val DEDICATED_INDIC_MODEL_DIRS: Map<AppLanguage, String> = mapOf(
+        AppLanguage.KANNADA to "indic-conformer-kn",
+        AppLanguage.TELUGU to "indic-conformer-te",
+        AppLanguage.TAMIL to "indic-conformer-ta"
+    )
+
+    /** Resolves which model directory should back STT decoding for [lang]. */
+    private fun sttModelDirFor(lang: AppLanguage): String = when (lang) {
+        AppLanguage.ENGLISH -> SENSEVOICE_DIR
+        else -> DEDICATED_INDIC_MODEL_DIRS[lang] ?: INDIC_CONFORMER_DIR
+    }
+
+    private data class PiperVoice(val dir: String, val modelFile: String)
+
+    /**
+     * Bundled Piper VITS voices, one per language that has a verified neural TTS model.
+     * Languages absent from this map fall back to Android's native TextToSpeech engine
+     * (see TtsManager.speak) since no offline-guaranteed voice is bundled for them yet.
+     */
+    private val PIPER_VOICES: Map<AppLanguage, PiperVoice> = mapOf(
+        AppLanguage.ENGLISH to PiperVoice("vits-piper-en_US-amy-low", "en_US-amy-low.onnx"),
+        AppLanguage.HINDI to PiperVoice("vits-piper-hi_IN-pratham-medium", "hi_IN-pratham-medium.onnx"),
+        AppLanguage.BENGALI to PiperVoice("vits-piper-bn_BD-google-medium", "bn_BD-google-medium.onnx"),
+        AppLanguage.MALAYALAM to PiperVoice("vits-piper-ml_IN-meera-medium", "ml_IN-meera-medium.onnx"),
+        AppLanguage.MARATHI to PiperVoice("vits-piper-mr_IN-google-medium", "mr_IN-google-medium.onnx"),
+        AppLanguage.TELUGU to PiperVoice("vits-piper-te_IN-venkatesh-medium", "te_IN-venkatesh-medium.onnx"),
+        AppLanguage.TAMIL to PiperVoice("vits-piper-ta_IN-rasa_female-medium", "ta_IN-rasa_female-medium.onnx")
+    )
 
     // Synchronization locks
     private val engineLock = Any()
@@ -47,6 +84,7 @@ class SherpaOnnxEngine(
     private var activeSttModelType: String? = null // "sensevoice" or "indicconformer"
     private var vad: Vad? = null
     private var tts: OfflineTts? = null
+    private var activeTtsLanguage: AppLanguage? = null // language currently loaded into [tts], independent of STT state
     private var currentLanguage = AppLanguage.ENGLISH
     private var currentOperationalMode = OperationalMode.WALKIE_TALKIE
 
@@ -75,8 +113,8 @@ class SherpaOnnxEngine(
         copyAsset("silero_vad.onnx")
         copyAssetDir(SENSEVOICE_DIR)
         copyAssetDir(INDIC_CONFORMER_DIR)
-        copyAssetDir("vits-piper-en_US-amy-low")
-        copyAssetDir("vits-piper-hi_IN-pratham-medium")
+        DEDICATED_INDIC_MODEL_DIRS.values.forEach { copyAssetDir(it) }
+        PIPER_VOICES.values.forEach { copyAssetDir(it.dir) }
     }
 
     private fun copyAsset(path: String) {
@@ -116,8 +154,11 @@ class SherpaOnnxEngine(
     /**
      * Build an OfflineRecognizer for the given language.
      * - ENGLISH: SenseVoice (int8, English, ITN enabled)
-     * - ALL INDIC LANGUAGES (hi, gu, mr, kn, ml, ta, te, or, bn):
-     *   AI4Bharat IndicConformer 120M INT8 CTC
+     * - KANNADA, TELUGU, TAMIL: dedicated per-language AI4Bharat IndicConformer CTC
+     *   checkpoints (native-script output, no transliteration needed)
+     * - REMAINING INDIC LANGUAGES (hi, gu, mr, ml, or, bn): shared AI4Bharat
+     *   IndicConformer 120M INT8 CTC (Devanagari-biased for non-Hindi input; routed
+     *   through IndicScriptConverter as a best-effort transliteration)
      */
     private fun buildSttRecognizer(lang: AppLanguage): OfflineRecognizer? {
         val cores = Runtime.getRuntime().availableProcessors()
@@ -147,16 +188,16 @@ class SherpaOnnxEngine(
                     decodingMethod = "greedy_search"
                 )
                 val rec = OfflineRecognizer(config = config)
-                activeSttModelType = "sensevoice"
+                activeSttModelType = SENSEVOICE_DIR
                 Log.i(TAG, "SenseVoice STT initialized (English, int8, $chosenThreads threads)")
                 rec
             }
             else -> {
-                // All 9 Indic languages share AI4Bharat IndicConformer 120M INT8 CTC
-                val modelFile = File(context.filesDir, "$INDIC_CONFORMER_DIR/model.int8.onnx")
-                val tokensFile = File(context.filesDir, "$INDIC_CONFORMER_DIR/tokens.txt")
+                val modelDir = sttModelDirFor(lang)
+                val modelFile = File(context.filesDir, "$modelDir/model.int8.onnx")
+                val tokensFile = File(context.filesDir, "$modelDir/tokens.txt")
                 if (!modelFile.exists() || !tokensFile.exists()) {
-                    Log.e(TAG, "IndicConformer files missing: model=${modelFile.exists()}, tokens=${tokensFile.exists()}")
+                    Log.e(TAG, "IndicConformer files missing for ${lang.label} ($modelDir): model=${modelFile.exists()}, tokens=${tokensFile.exists()}")
                     return null
                 }
                 val config = OfflineRecognizerConfig(
@@ -172,22 +213,23 @@ class SherpaOnnxEngine(
                     decodingMethod = "greedy_search"
                 )
                 val rec = OfflineRecognizer(config = config)
-                activeSttModelType = "indicconformer"
-                Log.i(TAG, "AI4Bharat IndicConformer STT initialized for ${lang.label} (int8 CTC, $chosenThreads threads)")
+                activeSttModelType = modelDir
+                Log.i(TAG, "AI4Bharat IndicConformer STT initialized for ${lang.label} ($modelDir, int8 CTC, $chosenThreads threads)")
                 rec
             }
         }
     }
 
     /**
-     * Rebuild Piper TTS engine for English or Hindi.
-     * Uses shared Hindi espeak-ng-data to prevent voice conflict singleton bugs.
+     * Rebuild the Piper TTS engine for [lang]. Only languages present in [PIPER_VOICES] are
+     * backed by a bundled neural voice; everything else is handled via Android native TTS
+     * (see TtsManager) and this returns immediately without touching engine state.
+     * All voices share the Hindi bundle's espeak-ng-data (same phonemization data files,
+     * just augmented with each new language's dict) to avoid duplicating that ~1MB blob
+     * per voice and to prevent voice conflict singleton bugs.
      */
     fun rebuildTTS(lang: AppLanguage) {
-        if (lang != AppLanguage.ENGLISH && lang != AppLanguage.HINDI) {
-            // Non-Piper languages are handled via Android native TTS
-            return
-        }
+        val voice = PIPER_VOICES[lang] ?: return
 
         try {
             ttsReady = false
@@ -197,21 +239,12 @@ class SherpaOnnxEngine(
             val sharedEspeakDataDir = File(context.filesDir,
                 "vits-piper-hi_IN-pratham-medium/espeak-ng-data").absolutePath
 
-            val vitsConfig = when (lang) {
-                AppLanguage.ENGLISH -> OfflineTtsVitsModelConfig(
-                    model = File(context.filesDir, "vits-piper-en_US-amy-low/en_US-amy-low.onnx").absolutePath,
-                    lexicon = "",
-                    tokens = File(context.filesDir, "vits-piper-en_US-amy-low/tokens.txt").absolutePath,
-                    dataDir = sharedEspeakDataDir
-                )
-                AppLanguage.HINDI -> OfflineTtsVitsModelConfig(
-                    model = File(context.filesDir, "vits-piper-hi_IN-pratham-medium/hi_IN-pratham-medium.onnx").absolutePath,
-                    lexicon = "",
-                    tokens = File(context.filesDir, "vits-piper-hi_IN-pratham-medium/tokens.txt").absolutePath,
-                    dataDir = sharedEspeakDataDir
-                )
-                else -> return
-            }
+            val vitsConfig = OfflineTtsVitsModelConfig(
+                model = File(context.filesDir, "${voice.dir}/${voice.modelFile}").absolutePath,
+                lexicon = "",
+                tokens = File(context.filesDir, "${voice.dir}/tokens.txt").absolutePath,
+                dataDir = sharedEspeakDataDir
+            )
 
             tts = OfflineTts(
                 config = OfflineTtsConfig(
@@ -223,11 +256,13 @@ class SherpaOnnxEngine(
                 )
             )
             ttsReady = true
+            activeTtsLanguage = lang
             Log.i(TAG, "Piper TTS initialized for: ${lang.name}")
         } catch (e: Exception) {
             Log.e(TAG, "Piper TTS rebuild failed for ${lang.name}: ${e.message}", e)
             tts = null
             ttsReady = false
+            activeTtsLanguage = null
         }
     }
 
@@ -534,40 +569,54 @@ class SherpaOnnxEngine(
 
     fun switchLanguage(lang: AppLanguage) {
         if (currentLanguage == lang) return
-        val targetModelType = if (lang == AppLanguage.ENGLISH) "sensevoice" else "indicconformer"
-        val needsModelReload = activeSttModelType != targetModelType || recognizer == null
+        // Each language maps to a specific model directory (see sttModelDirFor); only
+        // languages that share the SAME directory (e.g. hi/gu/mr/ml/or/bn on the shared
+        // fallback model) can skip a reload. Kannada/Telugu/Tamil each have distinct
+        // dedicated weights, so switching into or out of them always reloads.
+        //
+        // TTS reload is tracked independently of STT reload: two languages can share
+        // the same fallback STT directory (e.g. Gujarati and Marathi both use the
+        // shared IndicConformer) while needing different Piper voices, or one has a
+        // bundled voice and the other doesn't. Coupling the two caused a real bug —
+        // switching Gujarati -> Marathi short-circuited on the STT check and never
+        // loaded Marathi's Piper voice at all.
+        val targetModelDir = sttModelDirFor(lang)
+        val needsSttReload = activeSttModelType != targetModelDir || recognizer == null
+        val needsTtsReload = PIPER_VOICES.containsKey(lang) && activeTtsLanguage != lang
 
         currentLanguage = lang
 
-        if (!needsModelReload && (lang != AppLanguage.ENGLISH && lang != AppLanguage.HINDI)) {
-            // Indic-to-Indic switch requires 0 model reload!
-            Log.i(TAG, "Instant Indic switch to ${lang.label} (reusing active IndicConformer engine)")
+        if (!needsSttReload && !needsTtsReload) {
+            Log.i(TAG, "Instant switch to ${lang.label} (reusing active $targetModelDir engine)")
             return
         }
 
-        isSttSwitching = true
-        sttReady = false
+        if (needsSttReload) {
+            isSttSwitching = true
+            sttReady = false
+        }
 
         scope.launch(Dispatchers.IO) {
             synchronized(engineLock) {
                 try {
-                    if (needsModelReload) {
-                        Log.i(TAG, "Switching STT engine to ${lang.name} ($targetModelType)...")
+                    if (needsSttReload) {
+                        Log.i(TAG, "Switching STT engine to ${lang.name} ($targetModelDir)...")
                         recognizer?.release()
                         recognizer = null
                         recognizer = buildSttRecognizer(lang)
                     }
 
-                    // Piper reload only if English or Hindi
-                    if (lang == AppLanguage.ENGLISH || lang == AppLanguage.HINDI) {
+                    if (needsTtsReload) {
                         rebuildTTS(lang)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Language switch failed for ${lang.name}: ${e.message}", e)
                 } finally {
-                    sttReady = recognizer != null
-                    isSttSwitching = false
-                    Log.i(TAG, "Language switch complete: sttReady=$sttReady for ${lang.label}")
+                    if (needsSttReload) {
+                        sttReady = recognizer != null
+                        isSttSwitching = false
+                    }
+                    Log.i(TAG, "Language switch complete: sttReady=$sttReady, ttsReady=$ttsReady for ${lang.label}")
                 }
             }
         }
@@ -624,7 +673,7 @@ class SherpaOnnxEngine(
 
         scope.launch(Dispatchers.IO) {
             try {
-                if (currentLanguage != lang || !ttsReady || tts == null) {
+                if (activeTtsLanguage != lang || !ttsReady || tts == null) {
                     synchronized(engineLock) {
                         rebuildTTS(lang)
                     }

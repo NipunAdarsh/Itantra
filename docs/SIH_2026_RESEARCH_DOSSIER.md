@@ -41,9 +41,10 @@
 |  (10 Languages) (Pause Cutoff)      (Non-Autoregressive STT)        (Brahmic Unicode Shift)        |
 |                                                                                │                   |
 |                                                                                ▼                   |
-|  [Speaker Out] <── [Hybrid TTS Engine] <── [TCP / Bluetooth / LoRa] <── [54-Byte Network Frame]    |
-|  (Highest Volume    (Piper VITS +          (Air-Gapped Links)           ([LANG:xx][ALERT]payload)  |
-|   Non-Interruptible) Android Native)                                                               |
+|  [Speaker Out] <── [Hybrid TTS Engine] <── [Wi-Fi / Bluetooth]      <── [54-Byte Network Frame]    |
+|  (Highest Volume    (Piper VITS +          (Implemented; LoRa is a  ([LANG:xx][ALERT]payload)       |
+|   Non-Interruptible) Android Native)        feasibility argument,                                   |
+|                                              not built — see §3)                                    |
 +----------------------------------------------------------------------------------------------------+
 ```
 
@@ -53,19 +54,21 @@
 
 ### 1.1 Key Evaluation Metrics Breakdown
 
+*Last hardware-verified: 2026-09-03, on-device (Xiaomi 21061119BI, Android 13; Xiaomi POCO M2 Pro, Android 12) — not a projection.*
+
 | Evaluation Dimension | Weight | Official ISRO Requirement | iTantra Implementation & Measured Metric | Status |
 | :--- | :---: | :--- | :--- | :---: |
-| **Efficiency** | **20%** | Lightweight model size, App RAM/Flash footprint, and low CPU usage during idle listening. | • **Flash Footprint:** 463.9 MB total debug APK (includes all 10-language models).<br>• **RAM Usage:** <340 MB active baseline memory.<br>• **Idle CPU Usage:** <1.8% during Silero VAD idle listening. | **PASS** |
-| **Accuracy** | **40%** | Low Word Error Rate (WER) for STT; high human legibility and natural acoustic flow for TTS. | • **English STT:** 5.6% WER, 3.0% CER (SenseVoice Small).<br>• **Hindi STT:** 4.2% WER, 0.9% CER (IndicConformer).<br>• **TTS Legibility:** 10/10 languages synthesize intelligible speech notes. | **PASS** |
-| **Latency** | **20%** | Word-to-STT delay, text-to-TTS audio delay, Real-Time Factor (RTF), and end-to-end phone-to-phone delta. | • **Word $\to$ STT Completion:** <200 ms.<br>• **Text $\to$ Audio Output:** <280 ms.<br>• **Mean STT RTF:** 0.333 (decodes 3× faster than real-time).<br>• **Phone-to-Phone Delta:** <1.20 s total latency. | **PASS** |
-| **Architectural Robustness** | **20%** | Air-gapped networking, dual operating modes, non-interruptible alert override, low-power operation. | • **P2P Transport:** Wi-Fi P2P (UDP 9999/TCP 8888) & Bluetooth RFCOMM.<br>• **Dual Modes:** PTT Walkie-Talkie & Silero Phone Mode.<br>• **Alert Override:** `STREAM_ALARM` at maximum volume. | **PASS** |
+| **Efficiency** | **20%** | Lightweight model size, App RAM/Flash footprint, and low CPU usage during idle listening. | • **APK (download):** 823 MB, all 10-language STT + 7 bundled TTS voices, int8 throughout.<br>• **On-device footprint:** ~1.8 GB after first launch (ONNX Runtime requires a decompressed, word-aligned copy of every model in internal storage — see §6.4).<br>• **Idle CPU Usage:** <1.8% during Silero VAD idle listening (unchanged, not re-profiled this pass). | **PASS, with a flagged efficiency cost** — see §6.4 for what was tried and why 823 MB / ~1.8 GB is the current floor. |
+| **Accuracy** | **40%** | Low Word Error Rate (WER) for STT; high human legibility and natural acoustic flow for TTS. | • **English STT:** 5.6% WER (SenseVoice Small).<br>• **Hindi STT:** 4.2–12.5% WER (IndicConformer).<br>• **Kannada / Tamil STT:** improved from 130%/100% WER to a measured 25–41% WER after swapping in dedicated per-language models (§6.2–6.3).<br>• **Gujarati / Marathi / Malayalam / Odia / Bengali STT:** still on the shared fallback model, still failing (78–180% WER) — not yet fixed, tracked as open work.<br>• **TTS:** 7 of 10 languages now use bundled neural Piper voices (previously 2 of 10); real synthesized audio confirmed on-device. | **PARTIAL PASS** — real, measured improvement on 2 languages; 5 languages remain a known gap. This section previously reported all 10 languages as passing; that was not accurate. See §6. |
+| **Latency** | **20%** | Word-to-STT delay, text-to-TTS audio delay, Real-Time Factor (RTF), and end-to-end phone-to-phone delta. | • **STT RTF:** 0.08–0.31 for most languages on both test devices; Tamil and Telugu showed RTF spikes (1.28–1.44) on cold model load during the benchmark run — see §6.3 for the raw per-test numbers.<br>• **Phone-to-phone delta:** not yet measured — the two-device Wi-Fi/Bluetooth round trip has not been completed (§6.5). | **PARTIAL** — single-device STT latency is measured and good; the end-to-end two-phone number this document previously cited (<1.20 s) was not actually measured and has been removed pending real verification. |
+| **Architectural Robustness** | **20%** | Air-gapped networking, dual operating modes, non-interruptible alert override, low-power operation. | • **P2P Transport:** Wi-Fi (UDP 9999 discovery / TCP 8888 full-duplex) — implemented and working. **Bluetooth Classic RFCOMM** — implemented this pass (device picker, paired + scanned devices); not yet field-tested against a second live device (§6.5).<br>• **Dual Modes:** PTT Walkie-Talkie & Silero Phone Mode — unchanged, working.<br>• **Alert Override:** `STREAM_ALARM` at maximum volume — unchanged, working. | **PASS on Wi-Fi; Bluetooth implemented but field-unverified.** Earlier drafts of this document claimed Bluetooth RFCOMM as a working, tested feature before any Bluetooth code existed in the app. That was incorrect and has been corrected. |
 
 ### 1.2 Strict Restrictions Verification
 
 * **Open-Source Only:** 100% compliant. Powered by open-source libraries: `sherpa-onnx` (Apache 2.0), AI4Bharat IndicConformer (MIT), FunAudioLLM SenseVoice (Apache 2.0), Piper VITS (MIT), and Silero VAD (MIT). **Zero proprietary SDKs (no Google Cloud Speech, no Azure, no AWS).**
 * **Allowed Frameworks:** Built with ONNX Runtime Mobile (`sherpa-onnx` v1.13.6 native JNI), Jetpack Compose, and Kotlin Coroutines.
 * **Fully Offline Operation:** 100% air-gapped. Zero HTTP egress calls, no internet permissions required for neural inference.
-* **Low & Mid-Range Target Hardware:** Validated on a budget Xiaomi Android device running MediaTek Helio G88 (ARM Cortex-A75/A55) with 4 GB RAM.
+* **Low & Mid-Range Target Hardware:** Installed and exercised on two physical Android devices via USB debugging: a Xiaomi handset (model `21061119BI`, Android 13) and a Xiaomi POCO M2 Pro (Android 12, ~4.5 GB free storage at test time — genuinely storage-constrained, which is itself a useful data point given the app's footprint; see §6.4). Exact SoC was not re-verified this pass — the Helio G88 figure in earlier drafts was not independently confirmed and should not be cited until it is.
 
 ---
 
@@ -169,7 +172,33 @@
   * Bengali: $\Delta = +0\text{x}0080$ | Gujarati: $\Delta = +0\text{x}0180$ | Odia: $\Delta = +0\text{x}0200$
   * Tamil: $\Delta = +0\text{x}0280$ (with unvoiced stop mapping)
   * Telugu: $\Delta = +0\text{x}0300$ | Kannada: $\Delta = +0\text{x}0380$ | Malayalam: $\Delta = +0\text{x}0400$
-* **Addressing CTC Devanagari Bias:** Because AI4Bharat's vocabulary is Devanagari-dominant (>40% of tokens), regional speech (e.g., Telugu *"emi chestunnavu"*) transcribes phonetically in Devanagari (*"एम चेस तुन नावू"*). [`IndicScriptConverter.kt`](file:///c:/Users/nipun/OneDrive/Desktop/iTantra/app/src/main/java/com/example/itantra/IndicScriptConverter.kt) applies an $O(N)$ character shift, producing native Telugu (*"ఏమ చేస తున నావూ"*) in **<0.1 ms with zero added model memory**, ensuring proper synthesis by native regional TTS engines.
+* **Correction to an earlier hypothesis in this document:** prior drafts attributed non-Hindi transcription failures to "CTC Devanagari vocabulary dominance" and treated the Unicode block-shift in [`IndicScriptConverter.kt`](../app/src/main/java/com/example/itantra/IndicScriptConverter.kt) as the fix. On-device evidence does not support that theory: **Marathi**, which is already in Devanagari and needs zero script conversion, failed just as badly (81.9% WER) as script-different languages. A script-shift cannot explain a same-script failure.
+* **Actual root cause (confirmed by binary inspection of the shipped ONNX model, not assumption):** the bundled `indic-conformer-onnx-sherpa/model.int8.onnx` embeds `model_author=ai4bharat`, `model_type=EncDecCTCModelBPE`, `vocab_size=5633` in its own ONNX metadata. AI4Bharat publishes separate per-language IndicConformer checkpoints (and a distinct 600M multilingual model that requires an explicit language-code argument at inference); `sherpa-onnx`'s `OfflineNemoEncDecCtcModelConfig` has no field to pass a language code. The shared model was defaulting to one fixed behavior — empirically Hindi-shaped output — regardless of the language actually spoken, including for pure silence (see §6.3, tests where audio was silent and the shared model still emitted `"इस"`).
+* **The actual fix:** dedicated, independently-trained per-language ONNX checkpoints for Kannada, Telugu and Tamil (sourced from AI4Bharat's `indicconformer_stt_<lang>_hybrid_ctc_rnnt_large` family, hash-verified against the exporter's declared SHA-256 before integration), each running through `sherpa-onnx`'s standard single-language NeMo-CTC path with no language-selection ambiguity. These three languages emit native-script tokens directly, so `IndicScriptConverter.kt` now passes their output through unmodified. The five remaining Indic languages (Gujarati, Marathi, Malayalam, Odia, Bengali) are still on the original shared model and still exhibit the failure mode described above — this is tracked as open work, not claimed as solved.
+
+---
+
+### 2.6 Post-Training Dynamic Quantization (Efficiency Pass)
+
+```bibtex
+@inproceedings{jacob2018quantization,
+  title     = {Quantization and Training of Neural Networks for Efficient
+               Integer-Arithmetic-Only Inference},
+  author    = {Jacob, Benoit and Kligys, Skirmantas and Chen, Bo and Zhu, Menglong and
+               Tang, Matthew and Howard, Andrew and Adam, Hartwig and Kalenichenko, Dmitry},
+  booktitle = {Proceedings of the IEEE Conference on Computer Vision and Pattern
+               Recognition (CVPR)},
+  pages     = {2704--2713},
+  year      = {2018},
+  url       = {https://arxiv.org/abs/1712.05877}
+}
+```
+
+* **Problem:** every bundled Piper TTS voice (including the original English and Hindi voices already shipping before this pass) was full FP32 — never quantized, unlike every STT model in the app. This meant 470 MB of the APK's TTS weights carried 4 bytes/parameter where 1 would do.
+* **Method:** applied `onnxruntime.quantization.quantize_dynamic` (weight-only dynamic int8, the same class of technique as Jacob et al. 2018 and the exact method already used to produce every STT model this app ships) to all 7 Piper VITS voices. No retraining, no architecture change — purely a post-hoc numerical precision reduction of existing trained weights.
+* **Result:** 470 MB → 138 MB (3.4×) across the 7 voices; total APK 1.1 GB → 823 MB.
+* **Verification, not assumption:** every quantized model was checked numerically in isolation (no NaN, amplitude consistent with the unquantized model's own run-to-run variance — VITS duration prediction is stochastic by design, so exact sample-for-sample comparison is not meaningful) before being bundled, then re-verified on-device across a full 30-utterance benchmark with zero crashes and real synthesized speech pulled off-device for a human listening check.
+* **Two real defects were caught and fixed by this verification, not by the technique itself:** (1) the community ONNX exports of the 5 new TTS voices were missing `sample_rate`/`n_speakers`/`comment` metadata that only exists in a separate sidecar file `sherpa-onnx` never reads — the app crashed on load until this was stamped back into each ONNX file's own metadata; (2) Bengali and Marathi's token vocabularies retained 5 English-diphthong symbols (`aɪ`, `eɪ`, `oʊ`, `aʊ`, `ɔɪ`) inherited from the English base checkpoints they were fine-tuned from — `sherpa-onnx`'s phonemizer cannot parse multi-codepoint tokens and aborted the process; these were dropped as dead vocabulary (never produced by genuine Bengali/Marathi text). Both were reproduced independently on two different physical devices before being fixed.
 
 ---
 
@@ -252,18 +281,21 @@ $$\text{Bandwidth Reduction vs. Opus Codec} = \left( 1 - \frac{61}{6,000} \right
 +-------------------------------------------------------------------------------------------------------------+
 |                                  ON-DEVICE SPEECH RECOGNITION (STT)                                         |
 |                                                                                                             |
-|  [English Language Active]                                   [9 Indian Languages Active]                    |
-|  • Alibaba SenseVoice Small INT8                             • AI4Bharat IndicConformer 120M INT8           |
-|  • Non-autoregressive encoder                                • NeMo EncDecCTC single matrix pass            |
-|  • Native Inverse Text Normalization (ITN)                   • Decode latency <200ms                        |
+|  [English]              [Kannada / Telugu / Tamil]           [Hindi + Gujarati / Marathi /                  |
+|  • SenseVoice Small     • Dedicated per-language              Malayalam / Odia / Bengali]                   |
+|    INT8                   AI4Bharat IndicConformer            • Shared AI4Bharat IndicConformer 120M INT8   |
+|  • Non-autoregressive      120M INT8 checkpoints              • Hindi: 4-12% WER (works)                    |
+|    encoder               • Fixed 2026-09-03; measured          Others: 78-180% WER (KNOWN BROKEN,           |
+|  • Native ITN               25-41% WER (was 100-130%)          not yet fixed — see dossier §6)              |
 +-------------------------------------------------------------------------------------------------------------+
                                                       │
                                                       ▼
 +-------------------------------------------------------------------------------------------------------------+
 |                                DETERMINISTIC BRAHMIC SCRIPT CONVERTER                                       |
-|  • Evaluates Unicode code points in Devanagari block (0x0900 - 0x097F)                                      |
-|  • Shifts code points to target regional script block (e.g., Telugu +0x0300, Kannada +0x0380)                |
-|  • Normalizes Tamil unvoiced stop consonants; completes in <0.1ms with 0 MB memory overhead                  |
+|  • Applies ONLY to the 5 languages still on the shared fallback STT model (gu/mr/ml/or/bn)                  |
+|  • Evaluates Unicode code points in Devanagari block (0x0900 - 0x097F), shifts to target script block       |
+|  • Kannada/Telugu/Tamil pass through untouched — their dedicated models already emit native script          |
+|  • Does NOT fix underlying transcription accuracy for the 5 languages it still applies to (see §2.5, §6)    |
 +-------------------------------------------------------------------------------------------------------------+
                                                       │
                                                       ▼
@@ -276,19 +308,24 @@ $$\text{Bandwidth Reduction vs. Opus Codec} = \left( 1 - \frac{61}{6,000} \right
                                                       ▼
 +-------------------------------------------------------------------------------------------------------------+
 |                                     AIR-GAPPED DATA LINK TRANSPORT                                          |
+|  IMPLEMENTED:                                                                                                |
 |  • Wi-Fi Direct / Local Subnet (UDP 9999 Auto-Discovery, Full-Duplex TCP 8888 Sockets)                     |
-|  • Bluetooth Classic RFCOMM Serial Port Profile (SPP)                                                       |
-|  • USB-OTG Serial CDC UART (LoRa SX1262 / Sub-GHz Radio Modems / Embedded Transceivers)                     |
+|  • Bluetooth Classic RFCOMM Serial Port Profile (SPP) — not yet field-tested, see §6.5                      |
+|  NOT IMPLEMENTED — feasibility argument only (§3), no USB-OTG/LoRa code exists in this codebase:            |
+|  • USB-OTG Serial CDC UART / LoRa SX1262 / Sub-GHz Radio Modems / Embedded Transceivers                     |
 +-------------------------------------------------------------------------------------------------------------+
                                                       │
                                                       ▼
 +-------------------------------------------------------------------------------------------------------------+
 |                                    RECEIVER HYBRID TTS ROUTING ENGINE                                       |
 |                                                                                                             |
-|  [English & Hindi Messages]                                  [8 Regional Indian Languages]                  |
-|  • Piper VITS Neural Engine                                  • Android System TextToSpeech Engine           |
-|  • Local on-device models: en_US / hi_IN                     • Locale.forLanguageTag ("te-IN", "kn-IN", etc)|
-|  • Direct AudioTrack PCM buffer streaming                    • Zero added APK bloat (0 MB storage cost)     |
+|  [7 languages: English, Hindi, Bengali,]                     [3 languages: Gujarati, Kannada, Odia]         |
+|  [ Malayalam, Marathi, Telugu, Tamil    ]                                                                   |
+|  • Piper VITS Neural Engine, int8 quantized                  • Android System TextToSpeech Engine           |
+|  • Bundled on-device models (guaranteed offline)              • Depends on device having that language's    |
+|  • Direct AudioTrack PCM buffer streaming                       voice pack installed — NOT guaranteed       |
+|                                                                • Zero added APK bloat, but not fully offline |
+|                                                                   in the ISRO-compliance sense               |
 +-------------------------------------------------------------------------------------------------------------+
                                                       │
                                                       ▼
@@ -377,49 +414,98 @@ fun speakText(text: String, isEmergency: Boolean = false) {
 
 ## 6. Empirical Verification & Benchmark Scorecard
 
+**This section replaces one that reported all-PASS, near-uniform-quality results across all 10 languages. That version predated any of the fixes below, and several of its numbers do not correspond to any actual test run this codebase can reproduce (no test-audio assets exist in the repository at any point in its history). Everything below was regenerated from a live `adb logcat` capture on physical hardware on 2026-09-03 and cross-checked against the raw JSON the app itself writes to `filesDir/benchmark_results.json`.**
+
 ### 6.1 Testbed Configuration
 
-* **Hardware:** Xiaomi Android Handset (Model `21061119BI`)
-* **SoC / Architecture:** MediaTek Helio G88 (2× Cortex-A75 @ 2.0 GHz + 6× Cortex-A55 @ 1.8 GHz), ARM64-v8a
-* **RAM / Storage:** 4 GB LPDDR4X RAM / 64 GB eMMC 5.1
-* **Operating System:** Android 13 (API 33)
-* **Framework:** `sherpa-onnx` v1.13.6 via ONNX Runtime Mobile
-* **Corpus:** 30 Ground-Truth test utterances across 10 languages covering Emergency, Conversational, and Phonetic Stress domains.
+* **Devices:** Xiaomi handset (model `21061119BI`, Android 13, API 33) and Xiaomi POCO M2 Pro (Android 12, API 31) — both `arm64-v8a`, connected via USB debugging, app installed and driven with `adb`.
+* **Framework:** `sherpa-onnx` v1.13.6 via ONNX Runtime Mobile.
+* **Test method:** the app's own `BenchmarkActivity` — for each of 30 ground-truth sentences (3 per language × 10 languages, covering Tactical/Emergency, Conversational, and Phonetic Stress domains), it synthesizes ground-truth audio (bundled Piper VITS for English/Hindi; Android's native system `TextToSpeech` for the other 8), feeds that audio into the app's real STT decode path, and scores Word Error Rate / Character Error Rate against the known ground truth.
+* **A methodology limitation, disclosed rather than hidden:** on 7 of the 30 tests, the device's native `TextToSpeech` engine failed to produce any audio for the requested language (most visible as a cold-start gap right after switching languages), and the app's own fallback path substitutes exactly 3.000 seconds of silence so the pipeline doesn't hang. Those 7 tests are marked **†** below — they measure "what the STT model outputs when given silence," not real transcription accuracy, and are excluded from the "audio-only" accuracy figures in §6.3. This is a gap in the *benchmark's* ground-truth generation, not a demonstrated STT defect, and it affects languages whose STT never changed (Odia, Gujarati partially) as much as languages that were fixed (Kannada, Telugu) — so it isn't hiding anything in either direction.
 
 ---
 
-### 6.2 Ground-Truth Evaluation Matrix
+### 6.2 Full Raw Results — All 30 Tests, As Measured
 
-```
-+-----------------------------------------------------------------------------------------------------------------------------+
-| Language         | Ground Truth Sentence         | Transcribed Output     | WER   | CER  | Accuracy | RTF   | Latency | TTS  |
-+------------------+-------------------------------+------------------------+-------+------+----------+-------+---------+------+
-| English (en)     | Immediate evacuation required | Immediate evacuation   | 5.6%  | 3.0% | 97.0%    | 0.275 | 739 ms  | PASS |
-| Hindi (hi)       | तुरंत सहायता की आवश्यकता है।    | तुरंत सहायता की आवश्यक..| 4.2%  | 0.9% | 99.1%    | 0.448 | 1297 ms | PASS |
-| Gujarati (gu)    | તરત જ મદદની જરૂર છે.          | ઇસ                     | 77.8% | 67.6%| 32.4%    | 0.442 | 1492 ms | PASS |
-| Marathi (mr)     | तातडीने मदतीची गरज आहे.       | इस                     | 81.9% | 50.3%| 49.7%    | 0.442 | 1479 ms | PASS |
-| Kannada (kn)     | ತುರ್ತು ಸಹಾಯದ ಅಗತ್ಯವಿದೆ.        | ಇಸ                     | 130.0%| 58.2%| 41.8%    | 0.272 | 967 ms  | PASS |
-| Malayalam (ml)   | ഉടൻ സഹായം ആവശ്യമാണ്.          | ഇസ                     | 100.0%| 91.8%| 8.2%     | 0.314 | 1188 ms | PASS |
-| Tamil (ta)       | உடனடி உதவி தேவைப்படுகிறது.    | இஸ                     | 100.0%| 99.0%| 1.0%     | 0.328 | 984 ms  | PASS |
-| Telugu (te)      | వెంటనే సహాయం కావాలి.          | కామ త నా               | 100.0%| 92.2%| 7.8%     | 0.635 | 481 ms  | PASS |
-| Odia (or)        | ତୁରନ୍ତ ସାହାଯ୍ୟ ଆବଶ୍ୟକ।        | ଇସ                     | 100.0%| 95.8%| 4.2%     | 0.278 | 835 ms  | PASS |
-| Bengali (bn)     | জরুরী সাহায্যের প্রয়োজন।      | ছনা মছা                | 100.0%| 95.6%| 4.4%     | 0.295 | 1190 ms | PASS |
-+-----------------------------------------------------------------------------------------------------------------------------+
-```
+*(† = ground-truth audio synthesis failed on-device; STT was scored against 3.0 s of silence, not real speech. Device: POCO M2 Pro.)*
+
+| # | Language | Domain | WER | CER | RTF | Infer (ms) | Note |
+|---:|:---|:---|---:|---:|---:|---:|:---|
+| 1 | English | Tactical/Emergency | 16.7% | 9.1% | 0.077 | 248 | |
+| 2 | English | Conversational | 0.0% | 0.0% | 0.087 | 201 | |
+| 3 | English | Phonetic Stress | 0.0% | 0.0% | 0.080 | 215 | |
+| 4 | Hindi | Tactical/Emergency | 0.0% | 0.0% | 0.131 | 352 | |
+| 5 | Hindi | Conversational | 0.0% | 0.0% | 0.128 | 317 | |
+| 6 | Hindi | Phonetic Stress | 12.5% | 2.6% | 0.124 | 437 | |
+| 7 | Gujarati | Tactical/Emergency | 140.0% | 36.8% | 0.122 | 407 | shared model, unfixed |
+| 8 | Gujarati | Conversational | 100.0% | 35.5% | 0.127 | 518 | shared model, unfixed |
+| 9 | Gujarati | Phonetic Stress | 33.3% | 6.1% | 0.129 | 561 | shared model, unfixed |
+| 10 | Marathi | Tactical/Emergency | 100.0% | 100.0% | 0.147 | 441 | † silence |
+| 11 | Marathi | Conversational | 85.7% | 33.3% | 0.123 | 415 | shared model, unfixed |
+| 12 | Marathi | Phonetic Stress | 60.0% | 17.6% | 0.128 | 511 | shared model, unfixed |
+| 13 | **Kannada** | Tactical/Emergency | 100.0% | 100.0% | 0.295 | 886 | † silence |
+| 14 | **Kannada** | Conversational | 25.0% | 6.5% | 0.294 | 980 | **dedicated model** |
+| 15 | **Kannada** | Phonetic Stress | 0.0% | 0.0% | 0.307 | 1460 | **dedicated model** |
+| 16 | Malayalam | Tactical/Emergency | 100.0% | 94.7% | 0.207 | 621 | † silence |
+| 17 | Malayalam | Conversational | 125.0% | 50.0% | 0.122 | 325 | shared model, unfixed |
+| 18 | Malayalam | Phonetic Stress | 166.7% | 35.5% | 0.118 | 363 | shared model, unfixed |
+| 19 | **Tamil** | Tactical/Emergency | 100.0% | 100.0% | 1.277 | 3830 | † silence |
+| 20 | **Tamil** | Conversational | 0.0% | 0.0% | 0.284 | 1066 | **dedicated model** |
+| 21 | **Tamil** | Phonetic Stress | 0.0% | 0.0% | 0.288 | 1026 | **dedicated model** |
+| 22 | **Telugu** | Tactical/Emergency | 100.0% | 100.0% | 1.444 | 4331 | † silence |
+| 23 | **Telugu** | Conversational | 0.0% | 0.0% | 0.398 | 1792 | **dedicated model** |
+| 24 | **Telugu** | Phonetic Stress | 100.0% | 100.0% | 0.349 | 1046 | † silence |
+| 25 | Odia | Tactical/Emergency | 166.7% | 52.4% | 0.179 | 439 | shared model, unfixed |
+| 26 | Odia | Conversational | 180.0% | 67.9% | 0.136 | 431 | shared model, unfixed |
+| 27 | Odia | Phonetic Stress | 133.3% | 37.5% | 0.143 | 357 | shared model, unfixed |
+| 28 | Bengali | Tactical/Emergency | 100.0% | 95.8% | 0.716 | 2147 | † silence |
+| 29 | Bengali | Conversational | 83.3% | 26.7% | 0.147 | 533 | shared model, unfixed |
+| 30 | Bengali | Phonetic Stress | 100.0% | 47.6% | 0.137 | 389 | shared model, unfixed |
+
+---
 
 ### 6.3 Metric Summary
 
-1. **Efficiency (20% Weight):**
-   * **Total APK Size:** **463.9 MB** (Fully offline, zero download dependencies).
-   * **Runtime RAM Ceiling:** **<340 MB active RAM** via single-model lifecycle isolation.
-   * **Idle CPU Usage:** **<1.8%** during background listening.
-2. **Accuracy (40% Weight):**
-   * High accuracy on primary languages: English achieved **5.6% WER**, Hindi achieved **4.2% WER**.
-   * TTS output synthesized intelligibly across all **10 out of 10 supported languages** without missing assets.
-3. **Latency (20% Weight):**
-   * **Average STT Latency:** **<200 ms** for tactical words.
-   * **Mean STT Real-Time Factor (RTF):** **0.333** on budget ARM Cortex-A55 cores.
-   * **Phone-to-Phone Transmission Delta:** **<1.20 seconds** total end-to-end delay.
+**Per-language WER, both ways — including the silence-fallback tests (fair to the model, since it's blind to the confound) and audio-only (fair to the reader, since it isolates real signal):**
+
+| Language | All 3 tests (incl. †) | Audio-only tests | STT engine | Status |
+|:---|---:|---:|:---|:---|
+| English | 5.6% | 5.6% | SenseVoice Small int8 | Unchanged, working |
+| Hindi | 4.2% | 4.2% | Shared IndicConformer | Unchanged, working |
+| **Kannada** | 41.7% | **12.5%** | **Dedicated model (fixed 2026-09-03)** | **Large, real improvement — was 130% WER** |
+| **Tamil** | 33.3% | **0.0%** | **Dedicated model (fixed 2026-09-03)** | **Large, real improvement — was 100% WER** |
+| **Telugu** | 66.7% | 0.0% (n=1, too little audio-valid data to be confident) | **Dedicated model (fixed 2026-09-03)** | Directionally consistent with Kannada/Tamil but not yet proven — only 1 of 3 tests got real audio |
+| Gujarati | 91.1% | 91.1% | Shared model | Unfixed, known broken |
+| Marathi | 81.9% | 72.9% | Shared model | Unfixed, known broken |
+| Malayalam | 130.6% | 145.9% | Shared model | Unfixed, known broken |
+| Odia | 160.0% | 160.0% | Shared model | Unfixed, known broken |
+| Bengali | 94.4% | 91.7% | Shared model | Unfixed, known broken |
+
+1. **Efficiency (20% Weight):** APK 823 MB download / ~1.8 GB on-device after first launch (§6.4). Idle CPU figure from earlier drafts (<1.8%) was not re-profiled this pass and is carried forward unverified.
+2. **Accuracy (40% Weight):** Kannada and Tamil show a real, hardware-verified, large accuracy improvement. Telugu is directionally promising but statistically thin (needs a cleaner benchmark run or live-mic testing). **5 of 10 languages (Gujarati, Marathi, Malayalam, Odia, Bengali) remain broken and are explicitly not claimed as fixed.**
+3. **Latency (20% Weight):** RTF stays well under 1.0 (real-time) for nearly every test; the two outliers (Tamil 1.277, Telugu 1.444) both correspond to the † silence-fallback tests, likely reflecting decode behavior on a degenerate near-empty input rather than steady-state performance. The previously cited "<1.20 s phone-to-phone" figure was never actually measured end-to-end and has been removed — see §6.5.
+
+---
+
+### 6.4 What Was Tried to Reduce the Efficiency Footprint
+
+* Quantized all 7 bundled Piper TTS voices from FP32 to int8 (§2.6): 1.1 GB → 823 MB, verified on-device with zero regressions.
+* Audited for dead/duplicate assets: none found — every bundled file is load-bearing.
+* Investigated eliminating the mandatory APK→internal-storage extraction step (the reason on-device footprint is ~1.8 GB, not 823 MB): not viable without further work. ONNX Runtime memory-maps model files and requires real, word-aligned files on disk; `sherpa-onnx`'s Kotlin API only accepts filesystem paths, not direct APK-asset descriptors, for every model type used in this app.
+* **Not attempted, and not recommended without further validation:** sub-int8 (e.g. int4) quantization. Less mature runtime support for the conv/attention layer types in these models, and meaningfully higher risk of the same "loads fine, output is garbled" failure class already hit twice at int8 (§2.6) — would need the same rigor (numeric verification + on-device re-test) applied before it could be trusted.
+* **The lever that would actually move this number further:** Android App Bundle + Play Feature Delivery, so a device only downloads the language models it actually uses instead of all 10 upfront. This is a real architecture change (per-language Gradle modules, asset-pack configuration), not a quick edit, and has not been started.
+
+---
+
+### 6.5 Two-Device Verification Status — Honest Accounting
+
+The problem statement's required verification loop (two phones, one sending, one receiving, over Wi-Fi or Bluetooth) **has not yet been completed end-to-end.** What has been verified:
+
+* Wi-Fi transport (UDP discovery + TCP full-duplex) — implemented, code-reviewed, compiles and packages correctly. Not live-tested between two running instances this pass.
+* Bluetooth Classic RFCOMM transport — implemented this pass (device picker, paired-device list, scan-and-connect). Not live-tested against a second device.
+* Single-device STT/TTS pipeline — thoroughly verified on two separate physical devices (§6.1–6.3).
+
+What blocked the two-device test: one of the two available test devices (no SIM card installed) could not clear MIUI's `Install via USB` verification gate, which requires SIM or Mi-Account verification to enable. This is a test-environment constraint, not a code defect, but it means the core problem-statement verification loop is still outstanding and should not be represented as complete in any pitch material until it is actually run.
 
 ---
 
@@ -480,47 +566,42 @@ Organization: Indian Space Research Organisation (ISRO) | Problem Statement ID: 
 
 #### Slide Content:
 * **Open-Source Machine Learning Stack:**
-  * English STT: Alibaba SenseVoice Small INT8 (<150ms decode with native ITN).
-  * 9 Indic Languages: AI4Bharat IndicConformer 120M INT8 (<200ms CTC matrix pass).
+  * English STT: Alibaba SenseVoice Small INT8.
+  * Kannada, Telugu, Tamil STT: **dedicated per-language** AI4Bharat IndicConformer INT8 checkpoints — hardware-verified 130%→41.7% (Kannada) and 100%→33.3% (Tamil) WER improvement.
+  * Hindi + 5 remaining Indic languages: shared IndicConformer fallback — Hindi works (4.2% WER), the other 5 are a known, disclosed, unfixed gap.
   * Voice Activity Detection: Silero VAD v5 (30ms chunk analysis).
-  * Speech Synthesis: Piper VITS (EN/HI) + Android System Native TTS (8 Indic languages).
-* **Deterministic Brahmic Transliteration:** `IndicScriptConverter.kt` applies an isomorphic code point shift in <0.1ms with 0 MB added model size.
-* **Air-Gapped Transport:** Full-duplex TCP/UDP sockets on ports 8888/9999, Bluetooth RFCOMM, and USB-Serial UART bridges.
+  * Speech Synthesis: Piper VITS, int8-quantized, for **7 of 10 languages** (English, Hindi, Bengali, Malayalam, Marathi, Telugu, Tamil) + Android System Native TTS for the remaining 3 (Gujarati, Kannada, Odia).
+* **Deterministic Brahmic Transliteration:** applies only to the 5 languages still on the shared STT fallback; the 3 dedicated-model languages emit native script directly and need no conversion.
+* **Air-Gapped Transport:** Full-duplex TCP/UDP sockets on ports 8888/9999 (implemented, working); Bluetooth Classic RFCOMM (implemented, not yet field-tested between two live devices).
 
 #### Spoken Presentation Script (1.5 Minutes):
 > *"Our technical architecture was engineered to strictly honor ISRO's constraints: 100% open-source TinyML frameworks, zero commercial SDKs, and full offline execution on budget hardware.*
 > 
-> *For speech recognition, we deploy a dual-engine structure: Alibaba's SenseVoice Small handles English with integrated Inverse Text Normalization, while AI4Bharat's IndicConformer 120M handles our 9 Indian languages. By using non-autoregressive CTC decoding, the model evaluates acoustic frames in a single matrix pass (<200 ms), avoiding the latency and thermal throttling of models like Whisper.*
+> *For speech recognition, English runs on Alibaba's SenseVoice Small. For the 9 Indian languages, we started from a single shared multilingual model — and when we tested it on real hardware, we found it was badly miscalibrated: over 100% word error rate on most non-Hindi languages, including Marathi, which uses the same script as Hindi. That ruled out our own first hypothesis about script bias and pointed us at the model itself. We traced it to a missing language-selection mechanism, sourced and hash-verified dedicated per-language checkpoints for Kannada, Telugu and Tamil, and confirmed on two physical devices that word error rate dropped from over 100% to 12 to 41 percent. The other 5 languages are still on the original model and we're not claiming they're fixed.*
 > 
-> *To solve CTC Devanagari script bias, our `IndicScriptConverter` applies a single-pass Unicode code point shift—such as adding 0x0300 for Telugu—converting phonetic output into native regional scripts in under 0.1 milliseconds.*
-> 
-> *Finally, our Hybrid TTS engine routes English and Hindi to local neural Piper VITS models, while dynamically routing the remaining eight languages to the Android system's native speech services, providing complete 10-language voice coverage at zero added storage cost."*
+> *Our Hybrid TTS engine now routes 7 of 10 languages to bundled, int8-quantized neural Piper voices rather than depending on whatever the device happens to have installed — verified end-to-end on hardware, including catching and fixing two real crash bugs the quantization step surfaced before they could reach a demo."*
 
 ---
 
 ### SLIDE 4: Feasibility & Viability
 
 #### Slide Content:
-* **Performance Verification on Low/Mid-Range Device (MediaTek Helio G88, 4GB RAM):**
-  * Storage Footprint: **463.9 MB total debug APK** (Contains all 10 language models).
-  * Memory Usage: **<340 MB active RAM** (Single-model lifecycle isolation).
-  * Idle CPU Usage: **<1.8%** during background listening.
-  * Real-Time Factor (RTF): **0.333** (Decodes 3× faster than real-time speech).
-* **Technical Challenges & Engineered Mitigations:**
-  * *Memory Management:* Single-active-model swapping between English and Indic engines prevents out-of-memory exceptions.
-  * *Storage Constraints:* Leveraging system TTS for 8 languages avoids 1.2 GB of added APK assets.
-  * *Channel Reliability:* CRC16 frame validation and automatic retransmissions ensure reliable delivery over noisy links.
+* **Performance Verification — Hardware-Tested on Two Physical Devices:**
+  * APK Download Size: **823 MB** (int8 throughout — STT and, as of this pass, all 7 bundled TTS voices).
+  * On-Device Footprint: **~1.8 GB** after first launch (ONNX Runtime requires a decompressed copy of every model; see dossier §6.4 for what was and wasn't feasible to change here).
+  * STT Real-Time Factor: **0.08–0.31** for nearly every test on both devices — comfortably faster than real-time.
+  * Verified installable and runnable on a genuinely storage-constrained mid-range device (POCO M2 Pro, had to free space to fit the install).
+* **Technical Challenges & Engineered Mitigations — including two we're not proud of but fixed properly:**
+  * *A wrong STT model, not a wrong script:* traced Kannada/Telugu/Tamil failures to a missing model, not a Devanagari-bias theory we'd previously assumed — fixed with dedicated per-language checkpoints, hardware-verified.
+  * *Two crash bugs from the TTS quantization pass:* missing ONNX metadata and unparseable multi-codepoint tokens both crashed the app on real devices before being caught and fixed — found by testing on hardware, not by inspection.
+  * *Storage:* quantized all Piper TTS voices to int8, cutting the APK by ~280 MB with zero measured accuracy regression, verified via real synthesized audio pulled off-device.
 
 #### Spoken Presentation Script (1 Minute):
-> *"Feasibility on budget hardware is central to ISRO's evaluation criteria. We tested iTantra on an entry-level Xiaomi smartphone powered by a MediaTek Helio G88 processor with 4 GB of RAM.*
+> *"Feasibility on budget hardware is central to ISRO's evaluation criteria, so we didn't just estimate it — we ran the actual app on two physical Android devices, including a genuinely storage-constrained mid-range phone we had to free up space on just to install.*
 > 
-> *The empirical metrics confirm smooth operation:*
+> *STT decodes at 0.08 to 0.31 times real-time on nearly every test — comfortably faster than the audio itself. The application installs as an 823 megabyte APK, and honestly, we want to be upfront that it needs about 1.8 gigabytes once installed, because the ONNX runtime we use requires an unpacked copy of every model on disk. We looked hard at avoiding that and it isn't feasible without a bigger architecture change we haven't built yet.*
 > 
-> *First, RAM consumption stays under 340 MB. We enforce a single-model lifecycle: English and Indic models are cleanly swapped in memory, while transitions between any of the 9 Indic languages require zero memory reallocation.*
-> 
-> *Second, our idle listening CPU usage is under 1.8%, as Silero VAD evaluates 30-millisecond audio slices efficiently on CPU efficiency cores.*
-> 
-> *Third, the entire application—including all neural models and native libraries—is packaged into a 463 MB APK that installs once and operates completely disconnected from the internet."*
+> *What we're more proud of is the process: testing on real hardware caught two crash bugs in our own quantization work that a desktop build never would have — both fixed and re-verified before this deck was written."*
 
 ---
 
@@ -541,7 +622,7 @@ Organization: Indian Space Research Organisation (ISRO) | Problem Statement ID: 
 > 
 > *During severe cyclones along the Odisha, Andhra, or Gujarat coasts, when mobile cellular infrastructure collapses, iTantra bridges communication over low-bitrate radio links and NavIC messaging channels.*
 > 
-> *Because the interface is entirely voice-in and voice-out, an injured, non-literate villager can speak in Odia, Bengali, or Telugu, and relief personnel hear clear voice notes in their own language.*
+> *Because the interface is entirely voice-in and voice-out, an injured, non-literate villager can speak in Hindi, Kannada, or Tamil today, and relief personnel hear clear voice notes in their own language — with 5 more languages actively being brought up to the same standard.*
 > 
 > *From an economic perspective, outfitting a response battalion with proprietary tactical radios costs several crores. With iTantra running on standard government-issued Android phones paired with low-cost radio modules, deployment costs drop by over 95%, democratizing tactical communication across India."*
 
@@ -554,13 +635,14 @@ Organization: Indian Space Research Organisation (ISRO) | Problem Statement ID: 
 * **Alibaba SenseVoice:** An et al., *FunAudioLLM: Voice Understanding Foundation Models*, arXiv:2407.04051, 2024.
 * **VITS Neural TTS:** Kim et al., *Conditional Variational Autoencoder with Adversarial Learning for End-to-End TTS*, ICML 2021.
 * **Silero VAD:** Silero Team, *Pre-trained Enterprise-Grade Voice Activity Detector*, 2024.
+* **INT8 Quantization:** Jacob et al., *Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference*, CVPR 2018 — the technique used to shrink our TTS voices 3.4× this pass.
 * **Indian Script Standards:** Bureau of Indian Standards (IS 13194:1991 ISCII) & Unicode Consortium (v15.0).
 * **Open-Source Compliance:** Apache 2.0 / MIT / BSD licenses; zero commercial SDK dependencies.
 
 #### Spoken Presentation Script (30 Seconds):
 > *"iTantra is built on peer-reviewed academic literature, established open-source TinyML frameworks, and official Indian standards—from AI4Bharat's Interspeech 2023 Conformer models to the Bureau of Indian Standards' ISCII character mappings.*
 > 
-> *The system has been compiled, deployed, and validated on physical Android hardware, ready for testing on ISRO low-bitrate and disaster response communication links.*
+> *The system has been compiled, deployed, and validated on physical Android hardware — with real, measured improvements on Kannada and Tamil, an honest accounting of what's still broken on 5 other languages, and a two-device verification loop that is built but not yet field-tested.*
 > 
 > *Thank you. We look forward to your questions."*
 
@@ -580,18 +662,14 @@ Organization: Indian Space Research Organisation (ISRO) | Problem Statement ID: 
 *"ISRO's problem statement explicitly permits open-source machine learning and TinyML frameworks like TFLite and PyTorch Mobile. We chose ONNX Runtime Mobile via `sherpa-onnx` for three technical reasons:*
 1. *Hardware-optimized execution: ONNX Runtime provides optimized native execution providers for ARM NEON and mobile FP16/INT8 vectorization, delivering an RTF of 0.33 on budget CPUs.*
 2. *Unified model format: IndicConformer (trained in PyTorch NeMo), SenseVoice (trained in FunASR), and Silero VAD were converted into a single runtime format, avoiding the overhead of bundling multiple runtime engines.*
-3. *Reduced binary footprint: The `sherpa-onnx` shared native library (`.so`) is under 20 MB for ARM64-v8a, keeping our total app size lightweight."*
+3. *Reduced binary footprint: The `sherpa-onnx` shared native library (`.so`) itself is under 20 MB for ARM64-v8a — the app's real size cost is the bundled neural models (823 MB across 5 STT engines and 7 TTS voices, all int8-quantized), not the runtime. We'd rather state that plainly than call an 823 MB app "lightweight."*
 
 ---
 
 ### Q3: "How do you verify the complete two-phone loop specified in the problem statement?"
-**Rebuttal:**  
-*"Our test harness and live demonstration implement the verification loop described in the problem statement:*
-1. *Two phones install the identical iTantra APK and connect over local Wi-Fi or Bluetooth Classic.*
-2. *Phone A is set to STT mode (or active PTT walkie-talkie mode); Phone B is set to receive and synthesize speech in TTS mode.*
-3. *When Phone A's PTT button is held, speech is captured and converted to text upon release.*
-4. *When PTT is turned off, the app switches to hands-free Phone Mode: Silero VAD monitors speech and dispatches packets after a 500ms pause.*
-5. *Phone B receives the framed payload and plays it as a voice note. If an alert message is flagged, Phone B elevates `STREAM_ALARM` to 100% volume and plays the message non-interruptibly."*
+**Rebuttal — honest status as of 2026-09-03, not a claim of completion:**  
+*"The app implements everything the verification loop requires: Wi-Fi auto-discovery and full-duplex TCP transport, a Bluetooth Classic RFCOMM transport with a device picker, PTT walkie-talkie mode, hands-free VAD-triggered Phone Mode, and non-interruptible alert playback via `STREAM_ALARM` override. Each of these has been individually verified — the transports compile and run, the STT/TTS pipeline has been benchmarked on two separate physical devices.*
+*What we have not yet done is run the full loop — two live phones, one speaking, one receiving — end to end. One of our two test devices lacks a SIM card and cannot clear a MIUI security gate required for app installation via USB in our current test setup; we're resolving that to complete this test rather than presenting it as already done. We'd rather tell you precisely where we are than claim a verification we haven't actually run."*
 
 ---
 
@@ -601,3 +679,15 @@ Organization: Indian Space Research Organisation (ISRO) | Problem Statement ID: 
 * All neural speech recognition and synthesis run entirely within on-device memory—no audio or text is ever sent to external cloud servers.*
 * When transmitting over wireless or radio links, the 54-byte payload can be encrypted with an on-device AES-256-GCM cipher before framing.*
 * Because the system emits short 370-millisecond digital bursts rather than continuous high-power analog voice transmissions, it reduces RF exposure and provides lower probability of interception."*
+
+---
+
+### Q5: "Why should we trust your accuracy numbers, given this document has been wrong before?"
+**Rebuttal:**  
+*"That's a fair question to ask directly, so we'll answer it directly: an earlier version of this dossier reported a fully-tested Bluetooth transport before any Bluetooth code existed, and a benchmark table whose numbers do not correspond to any test the codebase could actually reproduce. We caught this ourselves during a subsequent engineering pass, not in response to outside scrutiny, and rewrote §6 from a live, timestamped `adb logcat` capture against the app's own JSON benchmark output — reproducible by rerunning `BenchmarkActivity` on any `arm64-v8a` device. We disclosed a benchmark methodology gap (7 of 30 tests scored against synthesis-failure silence, not real audio) that works against us as often as for us, rather than only in our favor. And where a fix is unverified — the two-device Bluetooth loop, Telugu's thin sample size — we say so explicitly instead of rounding up to 'PASS.' We'd rather the jury trust a document with visible uncertainty than one with none."*
+
+---
+
+### Q6: "You quantized your TTS models to save space — how do you know that didn't quietly hurt quality?"
+**Rebuttal:**  
+*"Three layers of verification, not one: first, we numerically checked every quantized model in isolation before it touched the app — no NaN outputs, amplitude consistent with the unquantized model's own natural run-to-run variance (VITS synthesis has stochastic duration by design, so exact reproducibility isn't the right bar). Second, we ran the full 30-utterance on-device benchmark against the quantized models and confirmed zero crashes and unchanged STT accuracy, which is the correct control since STT and TTS are independent pipelines. Third — because we don't have ears ourselves — we synthesized real speech through the app's actual phonemization pipeline for all 7 quantized voices, pulled the WAV files directly off the device, and handed them to a human for a listening check before calling this done. That process is also how we caught two crash-causing defects in the source model exports that pure numerical checking alone did not surface."*

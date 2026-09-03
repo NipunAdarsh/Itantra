@@ -187,10 +187,70 @@ class BenchmarkActivity : Activity() {
                 Log.e(TAG, "Could not write benchmark file: ${e.message}")
             }
 
+            exportPiperWavSamples(engine)
+
         } finally {
             engine.release()
             try { nativeTts?.shutdown() } catch (e: Exception) {}
             Log.i(TAG, "Benchmark execution complete.")
+        }
+    }
+
+    /**
+     * Debug-only helper: synthesizes one real sample per bundled Piper voice (through the
+     * app's actual espeak phonemization pipeline, not synthetic token sequences) and writes
+     * WAV files to filesDir so they can be pulled via `adb pull` for a human listening check.
+     * Exists purely to let a human verify quantized-voice audio quality after a model swap.
+     */
+    private fun exportPiperWavSamples(engine: SherpaOnnxEngine) {
+        val samplesDir = File(filesDir, "wav_samples").apply { mkdirs() }
+        val piperLanguages = listOf(
+            AppLanguage.ENGLISH to "This is a quality check of the compressed voice model.",
+            AppLanguage.HINDI to "तुरंत सहायता की आवश्यकता है।",
+            AppLanguage.BENGALI to "জরুরী সাহায্যের প্রয়োজন।",
+            AppLanguage.MALAYALAM to "ഉടൻ സഹായം ആവശ്യമാണ്.",
+            AppLanguage.MARATHI to "तातडीने मदतीची गरज आहे.",
+            AppLanguage.TELUGU to "వెంటనే సహాయం కావాలి.",
+            AppLanguage.TAMIL to "உடனடி உதவி தேவைப்படுகிறது."
+        )
+        for ((lang, text) in piperLanguages) {
+            try {
+                engine.switchLanguage(lang)
+                Thread.sleep(2000) // allow async model (re)load to finish
+                val samples = engine.synthesizePiperWav(text)
+                if (samples == null || samples.isEmpty()) {
+                    Log.w(TAG, "WAV export skipped for ${lang.label}: no audio produced")
+                    continue
+                }
+                val sampleRate = if (lang == AppLanguage.ENGLISH) 16000 else 22050
+                val wavFile = File(samplesDir, "${lang.code}.wav")
+                writeWavFile(wavFile, samples, sampleRate)
+                Log.i(TAG, "WAV sample written: ${wavFile.absolutePath} (${samples.size} samples, ${lang.label})")
+            } catch (e: Exception) {
+                Log.e(TAG, "WAV export failed for ${lang.label}: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun writeWavFile(file: File, samples: FloatArray, sampleRate: Int) {
+        val pcm = ShortArray(samples.size) { i ->
+            (samples[i].coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+        }
+        val dataSize = pcm.size * 2
+        val byteRate = sampleRate * 2
+        file.outputStream().use { out ->
+            fun writeIntLE(v: Int) { out.write(byteArrayOf((v and 0xFF).toByte(), (v shr 8 and 0xFF).toByte(), (v shr 16 and 0xFF).toByte(), (v shr 24 and 0xFF).toByte())) }
+            fun writeShortLE(v: Int) { out.write(byteArrayOf((v and 0xFF).toByte(), (v shr 8 and 0xFF).toByte())) }
+            out.write("RIFF".toByteArray()); writeIntLE(36 + dataSize); out.write("WAVE".toByteArray())
+            out.write("fmt ".toByteArray()); writeIntLE(16); writeShortLE(1); writeShortLE(1)
+            writeIntLE(sampleRate); writeIntLE(byteRate); writeShortLE(2); writeShortLE(16)
+            out.write("data".toByteArray()); writeIntLE(dataSize)
+            val bytes = ByteArray(dataSize)
+            for (i in pcm.indices) {
+                bytes[i * 2] = (pcm[i].toInt() and 0xFF).toByte()
+                bytes[i * 2 + 1] = (pcm[i].toInt() shr 8 and 0xFF).toByte()
+            }
+            out.write(bytes)
         }
     }
 

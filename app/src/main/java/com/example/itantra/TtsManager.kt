@@ -54,13 +54,15 @@ class TtsManager(
         if (cleanText.isBlank()) return
 
         when (targetLanguage) {
-            AppLanguage.ENGLISH, AppLanguage.HINDI -> {
-                // Route to ultra-low-latency neural Piper VITS
+            AppLanguage.ENGLISH, AppLanguage.HINDI, AppLanguage.BENGALI, AppLanguage.MALAYALAM,
+            AppLanguage.MARATHI, AppLanguage.TAMIL, AppLanguage.TELUGU -> {
+                // Route to bundled offline neural Piper VITS (guaranteed available, no device dependency)
                 Log.d(TAG, "Routing to Piper VITS for ${targetLanguage.label}: \"$cleanText\"")
                 speakPiper(cleanText, targetLanguage, isAlert)
             }
             else -> {
-                // Route to Android native TextToSpeech engine (0 MB APK overhead)
+                // Gujarati, Kannada, Odia: no bundled voice yet — route to Android native
+                // TextToSpeech engine, which depends on the device having that language pack.
                 speakNative(cleanText, targetLanguage, isAlert)
             }
         }
